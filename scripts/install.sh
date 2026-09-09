@@ -14,7 +14,7 @@ PROFILE_DST="$HERMES_HOME/profiles/$PROFILE"
 
 echo "== 安装插件到 $PLUGIN_DST =="
 mkdir -p "$PLUGIN_DST"
-cp "$PLUGIN_SRC"/plugin.yaml "$PLUGIN_SRC"/__init__.py "$PLUGIN_SRC"/db.py "$PLUGIN_SRC"/policy.py "$PLUGIN_DST"/
+cp "$PLUGIN_SRC"/plugin.yaml "$PLUGIN_SRC"/__init__.py "$PLUGIN_SRC"/gate.py "$PLUGIN_SRC"/db.py "$PLUGIN_SRC"/policy.py "$PLUGIN_DST"/
 
 echo "== 安装 MCP 到 $PROFILE_DST =="
 mkdir -p "$PROFILE_DST"
