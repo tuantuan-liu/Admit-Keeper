@@ -15,6 +15,7 @@ gate.py 的 ``gate()`` / ``is_allowed()`` 接进自己的"消息进 agent 前"�
   `pre_gateway_dispatch`：回调以 `event/gateway/session_store` 关键字调用；
   返回 `None`/`{"action":"allow"}` 放行，`{"action":"skip","reason":...}` 丢弃）。
 """
+
 from __future__ import annotations
 
 import sys
@@ -42,6 +43,9 @@ def _on_pre_gateway_dispatch(event, gateway, session_store=None, **kw):
         d = gate.gate(platform, identity)
         if d.is_skip():
             return {"action": "skip", "reason": d.reason}
+        # 数据不可得 + fail-open 放行：== 闸门静默失效的边缘 ==，必须大声告警（ADR-1）。
+        if d.is_allow() and d.reason == "fail_open":
+            _warn("admit-keeper 数据不可得，fail-open 放行，已封禁者可能漏放")
         return None
 
     except Exception as exc:  # noqa: BLE001 —— 兜底，绝不让插件拖垮网关
@@ -58,10 +62,10 @@ def _warn(msg: str) -> None:
         import logging
 
         logging.getLogger("admit-keeper").warning(msg)
-    except Exception:
+    except Exception:  # noqa: BLE001 —— 日志失败不抛给插件
         try:
             print("[admit-keeper]", msg, file=sys.stderr)
-        except Exception:
+        except Exception:  # noqa: BLE001, S110 —— 打印也失败则彻底静默，绝不向上抛
             pass
 
 
