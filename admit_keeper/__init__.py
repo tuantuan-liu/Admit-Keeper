@@ -1,9 +1,11 @@
-"""admit-keeper —— Hermes 网关准入插件（准入裁定层）。
+"""admit-keeper —— Hermes 接入层（准入裁定层）。
 
-职责：每条消息进 gateway 的 pre_gateway_dispatch 钩子，判定「谁有资格进入」。
-只读共享库 admit_keeper.db；与 MCP 管理端共用一个库、一份判定语义。
+本文件是框架无关内核（policy.py / db.py）在 **Hermes** 上的接入层：每条消息进 gateway 的
+pre_gateway_dispatch 钩子时，判定「谁有资格进入」。只读共享库 admit_keeper.db；与 MCP
+管理端共用一个库、一份判定语义。其他框架（FastAPI / bot 库 / 自研网关）只需照 README 的
+``gate_adapter`` 把关：调 ``decide()`` + ``lookup_plugin()``，本文件无需改动。
 
-运行于 Hermes 网关进程内，平台无关。管理端（MCP）见 mcp/admit_keeper_mcp.py。
+运行于 Hermes 网关进程内，平台/渠道无关。管理端（MCP）见 mcp/admit_keeper_mcp.py。
 
 说明：
 - Hermes 以包 `hermes_plugins.<slug>` 加载本插件（slug 把目录名 `admit-keeper` 转

@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """admit-keeper MCP server —— 授权管理层。
 
-写 admit_keeper.db，与准入插件共用同一库、同一份判定语义（db.py / policy.py）。
+写 admit_keeper.db，与准入层共用同一库、同一份判定语义（db.py / policy.py）。
 
-启动方式：由 Hermes 的 mcp_servers 以 stdio 启动。
+启动方式：由接入框架以 stdio 拉起（如 Hermes 的 mcp_servers）。
 前置：pip install -U "mcp[cli]>=1.0,<2"   （mcp 2.x 已把 FastMCP 改名/移除，需钉 <2 用 v1 API）
 """
 from __future__ import annotations

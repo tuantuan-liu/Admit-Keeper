@@ -1,14 +1,47 @@
 # Admit-Keeper
 
-**Hermes 网关平台无关准入控制组件** —— 在"消息进 agent 前"验票放行。源自「飞书体验用户限时封禁」，但设计为**全平台 + 可移植**：飞书 / 企微 / Telegram 等仅作为"已接入渠道"，项目本体是网关层的准入控制。
+**平台无关的准入控制组件** —— 在任何网关/框架的"消息进 agent 前"验票放行。源自「飞书体验用户限时封禁」，但设计为**全平台 + 可移植**。这里"全平台"指两个正交维度：
 
-`admit`（准许/准入）+ `keeper`（看守/保管）：keeper 既对应**准入层（插件）**的拦截看守，又对应**管理层（MCP）**的资格保管管理。
+- **接入框架**：Hermes、FastAPI、自研 bot 框架、RAG 流水线……项目内核不含任何框架代码，任何框架只需写一个几行的"门卫接入层"（对应下面的 `gate_adapter`）即可接上。
+- **消息渠道**：飞书 / 企微 / Telegram 等只是"已接入渠道"，由 `ADMIT_GATE_PLATFORMS` 决定哪些渠道走准入，与框架无关。
 
-> GitHub 同名仓库无占用，不撞 OPA Gatekeeper 等知名项目。
+`admit`（准许/准入）+ `keeper`（看守/保管）：keeper 既对应**准入层（门卫适配器）**的拦截看守，又对应**管理层（MCP）**的资格保管管理。
 
-## 快速开始
+> GitHub 同名仓库无占用，不撞 OPA Gatekeeper 等知名项目。下文 Hermes 只是**其中一个具体接入示例**。
 
-下面以"单配置部署"为例（配置即 `~/.hermes/config.yaml`；若用命名 profile，则把
+## 框架无关核心（先懂它）
+
+内核三件套，全部**不含任何框架代码**，任何框架都可直接用：
+
+- `admit_keeper/policy.py` → `decide(identity, record, allowlist, now, fail_open, unavailable)` —— 纯决策、无 IO、可单测。
+- `admit_keeper/db.py` → `lookup_plugin(platform, identity)` / `db_path()` —— 只读共享名册，与 MCP 解耦。
+- `mcp/admit_keeper_mcp.py` —— 管理层（FastMCP），低频读写同一库。
+
+任何框架的"消息进 agent 前"接线，就是**几行**把 `decide()` 接进自己的消息进入点：
+
+```python
+from policy import decide              # 或 admit_keeper.policy
+from db import lookup_plugin, now_iso
+
+def gate_adapter(platform, identity, *, allowlist=(), fail_open=True) -> bool:
+    """返回值：True=放行，False=丢弃。任何框架在消息进入点调它即可。"""
+    record, unavailable = lookup_plugin(platform, identity)
+    d = decide(identity=identity, record=record, allowlist=set(allowlist),
+               now=now_iso(), fail_open=fail_open, unavailable=unavailable)
+    return d.is_allow()
+
+def on_message(event):
+    if not gate_adapter(event.platform, event.user_id):
+        return drop()          # 框架各自的"丢弃"动作
+    return dispatch(event)     # 否则正常进入 agent
+```
+
+> "丢弃动作" `drop()` 因框架而异（Hermes 返回 `{"action":"skip"}`、FastAPI 返回 `403`、
+> bot 库返回"不处理"）——内核只做判定，把"如何丢弃"交给接入层。
+
+## 接入 Hermes（示例）
+
+Hermes 是其中一个**具体接入示例**。下面以"单配置部署"为例（配置即 `~/.hermes/config.yaml`；若用命名 profile，则把
 `~/.hermes` 换成 `~/.hermes/profiles/<profile>`，命令加 `-p <profile>`）。
 
 **1) 复制文件**（插件 + MCP 到 `~/.hermes`）
@@ -99,30 +132,30 @@ remove("feishu", "ou_xxx")            # 删记录（删除后无白名单兜底�
 
 ```
 Admit-Keeper/
-├── admit_keeper/                  # 准入插件包（= ~/.hermes/plugins/admit-keeper/ 内容）
-│   ├── plugin.yaml                # Hermes 插件元数据
-│   ├── __init__.py                # 插件入口（register + pre_gateway_dispatch 钩子）
-│   ├── policy.py                  # 纯决策核心（可单测）—— 插件与 MCP 共用
-│   └── db.py                      # 共享 SQLite 数据层（WAL）
+├── admit_keeper/                  # 准入内核 + Hermes 接入层（此目录 = ~/.hermes/plugins/admit-keeper/ 内容）
+│   ├── plugin.yaml                # Hermes 插件元数据（仅 Hermes 接入用）
+│   ├── __init__.py                # Hermes 接入层（register + pre_gateway_dispatch 钩子）；非 Hermes 框架直接用 policy/db
+│   ├── policy.py                  # 纯决策核心（可单测）—— 框架无关
+│   └── db.py                      # 共享 SQLite 数据层（WAL）—— 框架无关
 ├── mcp/
-│   └── admit_keeper_mcp.py        # 授权管理服务端（FastMCP）
+│   └── admit_keeper_mcp.py        # 授权管理服务端（FastMCP）—— 框架无关
 ├── config/
-│   ├── env.example                # 该 profile 的 .env 参考
-│   ├── config.example.yaml        # 该 profile 的 config.yaml 参考
+│   ├── env.example                # Hermes 接入：该 profile 的 .env 参考
+│   ├── config.example.yaml        # Hermes 接入：该 profile 的 config.yaml 参考
 │   └── db.schema.sql              # 建表 DDL 参考
 ├── tests/
 │   ├── conftest.py
-│   ├── test_policy.py             # 决策矩阵单测
-│   └── test_db.py                 # db 读写 + 去重
+│   ├── test_policy.py             # 决策矩阵单测（框架无关）
+│   └── test_db.py                 # db 读写 + 去重（框架无关）
 ├── scripts/
-│   ├── install.sh                 # 复制到 ~/.hermes + 补 mcp[cli]
-│   └── make_db.py                 # 手动建库/迁移
+│   ├── install.sh                 # 复制到 ~/.hermes + 补 mcp[cli]（仅 Hermes 接入用）
+│   └── make_db.py                 # 手动建库/迁移（框架无关）
 └── docs/
-    ├── architecture.md            # 双层架构 + 共享名册
-    └── design-decisions.md        # 关键决策记录（ADR）
+    ├── architecture.md            # 三层架构 + 共享名册（框架无关）
+    └── design-decisions.md        # 关键决策记录（ADR，框架无关）+ Hermes API 核验附录
 ```
 
-### 运行时布局（单配置部署）
+### 运行时布局（Hermes 接入示例）
 
 单配置（默认 profile，配置即 `~/.hermes/config.yaml`）：
 
@@ -139,10 +172,30 @@ Admit-Keeper/
 
 命名 profile 则把 `~/.hermes` 换成 `~/.hermes/profiles/<profile>`，命令加 `-p <profile>`。
 
-## 平台扩展 & 移植
+## 接入其他框架（移植）
 
-- **平台扩展**：`ADMIT_GATE_PLATFORMS` 决定哪些平台走准入；列表内判"放行/拦截"，列表外**直接放行**。加平台 = 改这一配置，无需改代码。
-- **移植到其他框架**：搬 `mcp/admit_keeper_mcp.py` + `admit_keeper/` + DB 即得纯 Python/SQLite 核心；各框架只需重写自己的"门卫接入层"（对应 `_on_pre_gateway_dispatch` 的钩子/中间件/router 实现）。
+内核与框架无关，移植 = 把上面的 `gate_adapter` 接进**自己框架的"消息进入点"**。
+判定、库、管理层、环境变量全部不动。Hermes 只是示例之一：
+
+**FastAPI 示例**（其它框架同理——找"请求进 handler 前"的那个中间件/钩子/router）：
+```python
+from fastapi import HTTPException
+from .gate_adapter import gate_adapter      # 上文那几行的函数
+
+@app.middleware("http")
+async def admit(req, call_next):
+    platform = req.headers.get("x-platform")   # 从你的事件里取出 platform / identity
+    identity = req.headers.get("x-user-id")
+    if not gate_adapter(platform, identity):   # 内核判定
+        raise HTTPException(403, "not_authorized")   # 框架的"丢弃"动作
+    return await call_next(req)
+```
+
+- **接入框架**：仅需重写"门卫接入层"（Hermes 用 `_on_pre_gateway_dispatch`、FastAPI 用中间件、
+  bot 库用 router 钩子），内核不动。
+- **渠道平台**：`ADMIT_GATE_PLATFORMS` 决定哪些渠道走准入，列表外**直接放行**。加渠道 = 改这一个配置，无需改代码。
+- **判定语义**（固定）：`banned > 过期 > 无记录 > 白名单`，白名单只覆盖过期不覆盖 banned，
+  见 [docs/design-decisions.md](docs/design-decisions.md)。
 
 ## 关键环境变量
 

@@ -1,7 +1,7 @@
 """共享数据层 —— admit_keeper.db 的连接、建表、路径解析、读取。
 
-插件（热路径只读）与 MCP（低频读写）共用这一份，保证两端读写同一个库、同一套判词。
-仅标准库（sqlite3 / pathlib / datetime），插件侧无需额外依赖。
+准入层（热路径只读）与 MCP（低频读写）共用这一份，保证两端读写同一个库、同一套判词。
+仅标准库（sqlite3 / pathlib / datetime），准入层侧无需额外依赖。
 """
 from __future__ import annotations
 
@@ -46,7 +46,7 @@ def now_iso() -> str:
 
 
 def connect(db: Optional[str] = None, *, hot: bool = False) -> sqlite3.Connection:
-    """打开连接。hot=True（插件热路径）跳过 WAL pragma，避免每条消息都写盘。
+    """打开连接。hot=True（准入层热路径）跳过 WAL pragma，避免每条消息都写盘。
     非 hot（MCP 写路径）启用 WAL + busy_timeout，降低读写锁冲突。
     """
     con = sqlite3.connect(db or db_path(), timeout=2)
@@ -84,7 +84,7 @@ def lookup(con: sqlite3.Connection, platform: str, identity: str) -> Optional[tu
 
 
 def lookup_plugin(platform: str, identity: str, db: Optional[str] = None) -> tuple[Optional[tuple[str, Optional[str]]], bool]:
-    """插件热路径只读入口。
+    """准入层热路径只读入口。
 
     返回 (record, unavailable)：
       - record      None 表示表存在但无该身份记录；
