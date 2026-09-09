@@ -1,0 +1,10 @@
+name: admit-keeper
+version: 1.0.0
+description: >-
+  Platform-agnostic admission gate for Hermes gateway. Drops messages from
+  banned/expired identities at pre_gateway_dispatch. Reads admit_keeper.db
+  (shared with admit-keeper MCP). Managed platforms from ADMIT_GATE_PLATFORMS;
+  fail-open on unavailable/unmanaged; deny-by-default for unknown identities.
+kind: standalone
+provides_hooks:
+  - pre_gateway_dispatch

@@ -1,0 +1,25 @@
+# ===== admit-keeper 的 config.yaml 参考（MCP + 插件注册）=====
+# 合并进你实际的 config.yaml 顶层：单配置为 ~/.hermes/config.yaml；
+# 命名 profile 为其 profile 的 config.yaml。
+
+# 启用准入插件。必须是【列表】（顶层 plugins: -> enabled:）；缺省/畸形=什么都不启用。
+plugins:
+  enabled:
+    - admit-keeper
+
+# MCP 授权管理服务端（stdio）。Hermes 启动它时按 command 起一个子进程，
+# 只透传 PATH/HOME/+XDG_*/+这里 env 显式写的变量。
+mcp_servers:
+  admit-keeper:
+    # command 必须指向一个“装了 mcp[cli]<2”的解释器（mcp 2.x 已移除 FastMCP，见 docs）。
+    # 别指向没有 mcp 的系统 python3；建议用独立 venv：
+    #   python -m venv ~/.hermes/mcp-venv
+    #   ~/.hermes/mcp-venv/bin/python -m pip install -U "mcp[cli]>=1.0,<2"
+    # 用【绝对路径】，不要用 ~ 或 $VAR（子进程 env 不做展开）。
+    command: "/home/<user>/.hermes/mcp-venv/bin/python.exe"   # Windows
+    # command: "/home/<user>/.hermes/mcp-venv/bin/python"      # Linux/macOS
+    args: ["/home/<user>/.hermes/admit_keeper_mcp.py"]
+    env:
+      # 与插件读同一文件：插件用 $HERMES_HOME/admit_keeper.db（网关进程内的 HERMES_HOME），
+      # 这里写死同等【绝对路径】。保证两端读写同名库。
+      ADMIT_KEEPER_DB: "/home/<user>/.hermes/admit_keeper.db"

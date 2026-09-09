@@ -1,0 +1,29 @@
+[project]
+name = "admit-keeper"
+version = "1.0.0"
+description = "Platform-agnostic admission gate for Hermes gateway (plugin + MCP)."
+requires-python = ">=3.10"
+license = { text = "MIT" }
+
+[project.optional-dependencies]
+mcp = ["mcp[cli]>=1.0,<2"]
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["admit_keeper"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[dependency-groups]
+dev = [
+    "mcp[cli]>=1.0,<2",
+    "pytest>=8",
+]
+
+[tool.uv]
+python-preference = "system"
