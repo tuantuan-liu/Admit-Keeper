@@ -13,3 +13,6 @@ dist/
 # 本机 MCP 配置含真实 token（GITHUB_PERSONAL_ACCESS_TOKEN / GITEE_ACCESS_TOKEN），
 # 只留本地，绝不入库。
 .mcp.json
+
+# 本机 Claude Code 权限设置（含其它项目的本地路径），只留本地，绝不入库。
+.claude/settings.local.json
