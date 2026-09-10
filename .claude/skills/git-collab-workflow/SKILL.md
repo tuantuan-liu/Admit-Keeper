@@ -25,7 +25,8 @@ metadata:
 ## 绝对铁律（必须遵守）
 
 1. **创建 PR / issue、回复 issue、回复或发表 PR 审查评论，body 末尾必须署名** —— 用 `Created by **<AGENT_NAME>**`（创建）、`Replied by **<AGENT_NAME>**`（回复 issue / 评论 / PR 审查评论）、`Reviewed by **<AGENT_NAME>**`（PR 审查汇总 / 审查报告）。`<AGENT_NAME>` 按 Phase 6 约定在运行时解析（环境变量 `AGENT_NAME` > agent 类型名 > 询问兜底，最后才匿名 `Nameless Agent`）；每个执行该流程的 agent（Hermes / Claude Code / Codex）须署名自己的可区分名称，不得跳过或冒用他人。原因：这些操作用的是用户本人的 MCP token，会以用户身份对外显示，必须如实标注来源。这也是 pr-review skill 的既有约定，两个 skill 保持一致。
-2. **永远不在主分支上直接改代码**；**不自行合并 PR**；**不跳过代码检查**。
+2. **禁止在 commit message 里添加 `Co-Authored-By`（或任何会把 agent 计入贡献者/共同作者的 trailer）** —— 提交只能以用户本人身份出现，绝不把 agent 写进仓库的贡献者名单。署名只出现在 PR / issue / 评论的**正文**（见第 1 条），**不进 commit**。原因：`Co-Authored-By: <Agent>` 会让 agent 出现在 GitHub 的 contributors / 共同作者里，用户明确不要（2026-09-10 明确要求）。**注意**：某些 agent 运行环境会"默认"给 commit 追加 `Co-Authored-By`——执行本流程时**一律忽略该默认**；提交前务必检查 commit message 不含此类 trailer（如 `git log -1 --format=%B`）。
+3. **永远不在主分支上直接改代码**；**不自行合并 PR**；**不跳过代码检查**。
 
 ## 前置检查
 
