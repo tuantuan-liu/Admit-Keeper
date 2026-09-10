@@ -56,7 +56,28 @@
   本组件 `mcp/admit_keeper_mcp.py` 基于 v1 `FastMCP`，因此在 `install.sh`、
   `pyproject`（`mcp[cli]>=1.0,<2`）统一**钉 `<2`**，避免装到 2.x 后 `FastMCP` import 崩溃。
 - 若日后要升级到 mcp 2.x，需把 `FastMCP` 迁移到 `MCPServer`（API 多处变动），届时再单独处理。
-- 测试用 uv：`uv sync`（装 `mcp[cli]<2` + `pytest`）+ `uv run pytest`（39 项）。
+- 测试用 uv：`uv sync`（装 `mcp[cli]<2` + `pytest`）+ `uv run pytest`（88 项）。
+
+## ADR-8 临时准入窗口：仅放行「无记录」的新身份，落库到期=窗口结束
+
+- **决策**：新增 `admit_window` 表 + `open_window` / `close_window` / `list_windows` 工具。
+  窗口 `[start_at, end_at)` 内，**记录为 `None`** 的身份可进，并由 `gate` 落一条 `active`、
+  `expires_at = end_at`、`granted_by='window'` 的记录；`banned` 与**已过期**身份不受影响。
+  `platform` 可为**任意渠道名**，或通配 `*`（一次开窗即覆盖所有平台；`lookup_window` 匹配
+  `platform=? OR platform='*'`，多窗口共存时取更晚的 `end_at`）。
+- **原因**：需要「限时开放体验」——某时段让新面孔进来试用，时段一过自动失效，且不触碰已有
+  授权 / 封禁。落库使「谁在窗口期进来过」可审计，并在窗口记录被删后仍能靠到期时间自动收敛。
+- **理由（为何只放行「无记录」）**：窗口分支置于 `policy.decide()` 的「无记录」分支之内，
+  `banned`（有记录）与过期（有记录）天然短路，无需额外优先级判断；「窗口不放行过期」也与
+  「白名单只覆盖过期、不覆盖 banned」的既有分寸一致。
+- **代价**：热路径出现**唯一一次写**（每用户每窗口仅首次进入时写）。且窗口查询
+  `db.lookup_window_plugin()` 采用**与 `lookup_plugin` 刻意不同的降级语义**：DB 缺失 / 表
+  未建 / 任何异常一律视作「无窗口」(None)，**绝不** 返回 `unavailable`——否则旧库（无
+  `admit_window` 表）会因 `no such table` 把整条判定拖进 fail-open 全放行（ADR-1 最坏情形）。
+  已用回归测试 `test_gate_old_db_without_window_table_not_fail_open` 锁死。
+- **备注**：时间统一存 UTC；MCP 侧 `_parse_dt` 支持完整 ISO-8601（带偏移按偏移、不带按本机
+  本地时区）与 `HH:MM` 简写（今天本地，跨零点顺延次日）。`ensure_schema()` 因新增第二张表
+  改用 `executescript()`（`execute()` 一次只允许一条语句）。
 
 ## 已核对：Hermes 插件 / MCP 配置 API（对照真实源码）
 

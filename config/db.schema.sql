@@ -14,3 +14,17 @@ CREATE TABLE IF NOT EXISTS admit_allowed (
     updated_at TEXT,
     UNIQUE(platform, identity)
 );
+
+-- 临时准入窗口（限时开放）：窗口内全新身份可进，落库到期=窗口结束。见 ADR-8。
+CREATE TABLE IF NOT EXISTS admit_window (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    platform   TEXT NOT NULL,
+    start_at   TEXT NOT NULL,   -- UTC ISO-8601，含边界
+    end_at     TEXT NOT NULL,   -- UTC ISO-8601，不含（半开区间 [start, end)）
+    note       TEXT,
+    created_by TEXT,
+    created_at TEXT,
+    updated_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_admit_window_platform ON admit_window(platform, start_at, end_at);

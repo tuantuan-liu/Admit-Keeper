@@ -7,11 +7,12 @@ from __future__ import annotations
 
 import os
 import re
+from datetime import datetime, timedelta
 
 import pytest
 
 import admit_keeper_mcp as mcp  # 顶层模块导入，与运行时一致
-from db import lookup_plugin
+from db import lookup_plugin, lookup_window_plugin
 
 
 # FastMCP v1 的 @mcp.tool() 返回原函数，可直接以普通函数调用。
@@ -23,6 +24,9 @@ query = mcp.query
 get_expired = mcp.get_expired
 list_all = mcp.list_all
 remove = mcp.remove
+open_window = mcp.open_window
+close_window = mcp.close_window
+list_windows = mcp.list_windows
 
 
 @pytest.fixture
@@ -121,3 +125,91 @@ def test_remove_deletes_and_denies(db_env):
     record, unavailable = lookup_plugin("feishu", "ou_1")
     assert record is None
     assert unavailable is False
+
+
+# ---------------- 临时准入窗口（open_window / close_window / list_windows） ----------------
+
+def _local_iso(delta_seconds: float) -> str:
+    """本机本地时间戳（naive ISO，open_window 会按本地时区解释）。"""
+    return (datetime.now() + timedelta(seconds=delta_seconds)).strftime("%Y-%m-%dT%H:%M:%S")
+
+
+def _local_hhmm(delta_seconds: float) -> str:
+    return (datetime.now() + timedelta(seconds=delta_seconds)).strftime("%H:%M")
+
+
+def _win_id(res: str) -> int:
+    return int(re.search(r"#(\d+)", res).group(1))
+
+
+def test_open_window_and_list(db_env):
+    res = open_window("feishu", start=_local_iso(-3600), end=_local_iso(3600), note="体验")
+    assert "opened window #" in res
+    out = list_windows()
+    assert "[open]" in out and "feishu" in out and "体验" in out
+
+
+def test_open_window_hhmm_shorthand(db_env):
+    # 简写 HH:MM（今天本地）；含当前时刻 → 应处于 open。
+    open_window("feishu", start=_local_hhmm(-3600), end=_local_hhmm(3600))
+    assert "[open]" in list_windows("feishu")
+
+
+def test_open_window_offset_converted_to_utc(db_env):
+    res = open_window("feishu", start="2026-09-10T14:00:00+08:00", end="2026-09-10T16:00:00+08:00")
+    # +08:00 14:00/16:00 → UTC 06:00/08:00
+    assert "2026-09-10T06:00:00Z" in res
+    assert "2026-09-10T08:00:00Z" in res
+
+
+def test_open_window_start_not_before_end_raises(db_env):
+    with pytest.raises(ValueError):
+        open_window("feishu", start="2026-09-10T16:00:00", end="2026-09-10T14:00:00")
+
+
+def test_list_windows_empty(db_env):
+    assert list_windows() == "无窗口"
+
+
+def test_upcoming_window_state(db_env):
+    open_window("feishu", start=_local_iso(600), end=_local_iso(3600))
+    assert "[upcoming]" in list_windows("feishu")
+
+
+def test_close_window_closes_open(db_env):
+    open_window("feishu", start=_local_iso(-3600), end=_local_iso(3600))
+    assert "[open]" in list_windows("feishu")
+    assert "closed 1 open window(s)" in close_window("feishu")
+    assert "[closed]" in list_windows("feishu")
+    # 无开放窗口后再关 → 幂等提示
+    assert "无开放窗口" in close_window("feishu")
+
+
+def test_close_window_by_id_deletes(db_env):
+    wid = _win_id(open_window("feishu", start=_local_iso(600), end=_local_iso(3600)))  # 未来窗口
+    assert "deleted window" in close_window("feishu", id=wid)
+    assert list_windows("feishu") == "无窗口"
+
+
+def test_window_visible_to_plugin_read_path(db_env):
+    open_window("feishu", start=_local_iso(-3600), end=_local_iso(3600))
+    assert lookup_window_plugin("feishu") is not None
+    assert lookup_window_plugin("wecom") is None  # 其他平台无窗口
+
+
+def test_open_window_wildcard_covers_all_platforms(db_env):
+    res = open_window("*", start=_local_iso(-3600), end=_local_iso(3600), note="全平台")
+    assert "所有平台" in res
+    for p in ("feishu", "wecom", "telegram"):   # 含未在 ADMIT_GATE_PLATFORMS 的平台
+        assert lookup_window_plugin(p) is not None
+    assert "[open]" in list_windows("*")
+
+
+def test_close_window_wildcard(db_env):
+    open_window("*", start=_local_iso(-3600), end=_local_iso(3600))
+    assert "closed 1 open window(s)" in close_window("*")
+    assert lookup_window_plugin("feishu") is None
+    # 关闭通配不影响平台专属窗口（反之亦然）
+    open_window("feishu", start=_local_iso(-3600), end=_local_iso(3600))
+    assert "* 当前无开放窗口" in close_window("*")
+    assert lookup_window_plugin("feishu") is not None
