@@ -1,0 +1,21 @@
+{
+  "mcpServers": {
+    "gitee": {
+      "command": "npx",
+      "args": ["-y", "mcp-gitee"],
+      "env": {
+        "GITEE_API_BASE": "https://gitee.com/api/v5",
+        "GITEE_ACCESS_TOKEN": "Personal Token",
+        "GITEE_USER_NAME": "your_name"
+      }
+    },
+    "github": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-github"],
+      "env": {
+        "GITHUB_PERSONAL_ACCESS_TOKEN": "your_personal_token",
+        "GITHUB_USER_NAME": ""
+      }
+    }
+  }
+}

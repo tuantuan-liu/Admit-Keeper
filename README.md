@@ -180,7 +180,9 @@ Admit-Keeper/
 │   ├── test_policy.py             # 决策矩阵单测（框架无关）
 │   ├── test_db.py                 # db 读写 + 去重（框架无关）
 │   ├── test_gate.py               # 共享门卫助手 gate()/is_allowed() + Hermes 接入层映射
-│   └── test_window.py             # 临时准入窗口：policy / db / gate 端到端
+│   ├── test_window.py             # 临时准入窗口：policy / db / gate 端到端
+│   ├── test_mcp_integration.py    # MCP 工具级集成（grant/ban/unban/...）
+│   └── test_plugin.py             # Hermes 接入层插件钩子（含 fail-open 告警断言）
 ├── scripts/
 │   ├── install.sh                 # 复制到 ~/.hermes + 补 mcp[cli]（仅 Hermes 接入用）
 │   └── make_db.py                 # 手动建库/迁移（框架无关）
@@ -244,7 +246,7 @@ async def admit(req, call_next):
 
 ```bash
 uv sync                                  # 安装 dev 依赖（uv 环境，含 mcp[cli]<2 + pytest）
-uv run pytest                            # 全量：单元 + MCP 工具级集成，共 88 项
+uv run pytest                            # 全量：单元 + MCP 集成 + 窗口 + 插件钩子，共 102 项
 ```
 
 详见 [docs/architecture.md](docs/architecture.md) 与 [docs/design-decisions.md](docs/design-decisions.md)。
