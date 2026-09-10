@@ -33,7 +33,7 @@
   `admit_keeper.gate`，判定 / 库 / 环境变量全在门卫助手里处理，见 README）。
   基本只读；**唯一例外**：命中临时准入窗口时，为新身份落一条记录（见下）。
 - ② 共享名册：唯一数据来源，靠同一个 SQLite 解耦。两张表：
-  `admit_allowed`（身份：platform + identity + status + expires_at）与
+  `admit_allowed`（身份：platform + identity + status + expires_at + **granted_by 来源标记**）与
   `admit_window`（临时窗口：platform + start_at + end_at）。
 - ③ 管理层：动态授权 / 封禁 / 续期 / 查询 / **窗口开关**，读写库。**框架无关**。
 
@@ -47,14 +47,21 @@ fail-open）、调 `db.lookup_plugin()` + `policy.decide()`，对外只暴露 `g
 
 ② 里多一张可选表 `admit_window`：窗口 `[start_at, end_at)` 内，**无记录的**新身份可进。
 `platform` 任意渠道名或通配 `*`（一次开窗覆盖所有平台）。
-`gate.gate()` 仅在「记录为 `None`」时才多查一次窗口（保持常见路径单查询），命中则放行并
-`db.grant_window_entry()` 落一条 `expires_at = 窗口结束` 的记录。`banned` / 已过期者不受影响
-（窗口分支位于「无记录」之内，天然不触碰它们，见 ADR-8）。
+`gate.gate()` 仅在「记录为 `None`」或「记录是**窗口引入的**已过期记录」时才多查一次窗口
+（保持常见路径单查询），命中则放行并 `db.grant_window_entry()` 落一条 `expires_at = 窗口结束`、
+`granted_by='window'` 的记录。
+
+**窗口重开**：判定用记录里的 `granted_by` **来源标记**区分"体验名额"与"付费授权"——
+窗口引入（`granted_by='window'`）的过期记录，在新窗口开放时重新放行并把到期顺延到新窗口结束
+（reason `window_reentry`，修「第二天哑火」）；付费 / 手工授权的过期记录不受影响（仍拒）。
+`banned` 恒拒（窗口分支在 banned 之后，见 ADR-2 / ADR-8）。
 
 **健壮性要点**：窗口查询走独立的 `db.lookup_window_plugin()`，**降级语义与 `lookup_plugin`
 刻意不同**——DB 缺失 / 表未建 / 任何读取异常一律视作「无窗口」(None)，**绝不**返回
 `unavailable`，否则旧库（无 `admit_window` 表）会因 `no such table` 把整条判定拖进
-fail-open 全放行。
+fail-open 全放行。**同理**，`db.lookup()` 对**缺 `granted_by` 列的旧库**自动降级为 2 列查询
+（`granted_by` 视作 `None` = 非窗口引入，安全默认），避免 `no such column` 被 `lookup_plugin`
+的 `except sqlite3.Error` 吃成 `unavailable`；写路径由 `ensure_schema()` 的 `_migrate()` 补列收敛。
 
 ## 决策逻辑集中化（框架无关）
 

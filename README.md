@@ -13,7 +13,7 @@
 
 内核 + 门卫助手，全部**不含任何框架代码**，任何框架都可直接用：
 
-- `admit_keeper/policy.py` → `decide(identity, record, allowlist, now, fail_open, unavailable)` —— 纯决策、无 IO、可单测。
+- `admit_keeper/policy.py` → `decide(identity, record, allowlist, now, fail_open, unavailable, window_open, window_reentry)` —— 纯决策、无 IO、可单测。
 - `admit_keeper/db.py` → `lookup_plugin(platform, identity)` / `db_path()` —— 只读共享名册，与 MCP 解耦。
 - `admit_keeper/gate.py` → `gate(...)` / `is_allowed(...)` —— **框架无关门卫助手**：读环境变量、调 `lookup_plugin` + `decide`，一个函数给出放行/丢弃判定。这就是"换框架只写接入层"的那份共享实现。
 - `mcp/admit_keeper_mcp.py` —— 管理层（FastMCP），低频读写同一库。
@@ -121,12 +121,18 @@ grant("feishu", "ou_xxx", days=7)     # 开通 7 天
 grant("feishu", "ou_yyy")             # 永久授权
 extend("feishu", "ou_xxx", days=3)    # 续期 3 天（banned 需先 unban）
 ban("feishu", "ou_zzz", note="滥用")   # 立即封禁
-unban("feishu", "ou_zzz")             # 解封
+unban("feishu", "ou_zzz")             # 仅解封，保留原期限（≠授权，见 ADR-9）
 get_expired()                         # 列出过期/封禁
 query("feishu", "ou_xxx")             # 查单个状态
 list_all()                            # 全部记录
 remove("feishu", "ou_xxx")            # 删记录（删除后无白名单兜底则拒收）
 ```
+
+> **`unban` 只解封、不授权**（[ADR-9](docs/design-decisions.md)）：它只把封禁态翻回 `active`，
+> **不动 `expires_at`**；对无记录的身份直接返回 `NOT_FOUND`，**不会**凭空建记录。
+> 想让封禁用户真正进来，需**显式**再 `grant` / `extend`。
+> **`extend` 以 `max(现在, 原到期)` 为基准**（[ADR-10](docs/design-decisions.md)）：未到期则在原
+> 到期上叠加，已过期则从**现在**起算并回显"立即生效"，避免"给过期用户续期却仍被拒"。
 
 ## 临时准入窗口（限时开放）
 
@@ -151,8 +157,13 @@ close_window("wecom", id=3)    # 按 id 删除（可取消尚未开始的未来�
 **语义**（见 [ADR-8](docs/design-decisions.md)）：
 
 - 窗口 `[start, end)` 内，**从未有过记录的全新身份**发消息 → 放行，并自动落一条
-  `active`、**到期时间 = 窗口结束**的记录（可审计、到期自动失效）。
-- **`banned` 恒拒**；**已过期**身份不受窗口影响（仍拒）。窗口只放行"全新"用户。
+  `active`、**到期时间 = 窗口结束**、来源标记 `granted_by='window'` 的记录（可审计、到期自动失效）。
+- **窗口重开 = 重新纳入"窗口引入的"老面孔**：上次从窗口进来的用户，其记录到期时间就是上次窗口的
+  结束时刻；**新窗口一开**，他会再次被放行，并把到期顺延到新窗口结束。修「每晚定点开放体验
+  第二天哑火」——否则他带着一条"昨天已到期"的记录，第二天必被拒。
+- **但只重新纳入窗口引入的**：**付费 / 手工授权**（`granted_by` 非 `window`）的过期用户，
+  窗口重开**照旧拒**（`deny:expired`）。窗口是"体验名额"，不顺带复活别人的付费到期。
+- **`banned` 恒拒**：封过的老面孔，窗口重开也绝不复活。
 - 过了 `end`，这些用户自动过期 → 拒收。
 
 **时间输入**：支持完整 ISO-8601（`2026-09-10T14:00:00`，带偏移 `+08:00` / 末尾 `Z` 均可）
@@ -230,7 +241,8 @@ async def admit(req, call_next):
 - **接入框架**：仅需重写"门卫接入层"（Hermes 用 `_on_pre_gateway_dispatch`、FastAPI 用中间件、
   bot 库用 router 钩子），统一调 `admit_keeper.gate.is_allowed()`，内核不动。
 - **渠道平台**：`ADMIT_GATE_PLATFORMS` 决定哪些渠道走准入，列表外**直接放行**。加渠道 = 改这一个配置，无需改代码。
-- **判定语义**（固定）：`banned > 过期 > 无记录 > 白名单`，白名单只覆盖过期不覆盖 banned，
+- **判定语义**（固定）：`banned > 过期 > 无记录 > 白名单`，白名单只覆盖过期不覆盖 banned；
+  临时窗口则只补"无记录"的洞，并只重新纳入"窗口引入的"过期记录（不覆盖付费过期、不覆盖 banned）。
   见 [docs/design-decisions.md](docs/design-decisions.md)。
 
 ## 关键环境变量
@@ -246,7 +258,7 @@ async def admit(req, call_next):
 
 ```bash
 uv sync                                  # 安装 dev 依赖（uv 环境，含 mcp[cli]<2 + pytest）
-uv run pytest                            # 全量：单元 + MCP 集成 + 窗口 + 插件钩子，共 102 项
+uv run pytest                            # 全量：单元 + MCP 集成 + 窗口 + 插件钩子，共 118 项
 ```
 
 详见 [docs/architecture.md](docs/architecture.md) 与 [docs/design-decisions.md](docs/design-decisions.md)。

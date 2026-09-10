@@ -5,14 +5,14 @@
 """
 from __future__ import annotations
 
-import os
 import re
 from datetime import datetime, timedelta
 
 import pytest
 
 import admit_keeper_mcp as mcp  # 顶层模块导入，与运行时一致
-from db import lookup_plugin, lookup_window_plugin
+from db import lookup_plugin, lookup_window_plugin, now_iso
+from policy import decide
 
 
 # FastMCP v1 的 @mcp.tool() 返回原函数，可直接以普通函数调用。
@@ -72,11 +72,78 @@ def test_grant_is_visible_to_plugin_read_path(db_env):
 
 def test_ban_unban_roundtrip(db_env):
     grant("feishu", "ou_1", days=7)
+    exp_before = _expires(query("feishu", "ou_1"))
     assert "banned" in ban("feishu", "ou_1", note="滥用")
     assert query("feishu", "ou_1").startswith("status=banned")
     assert "unbanned" in unban("feishu", "ou_1")
     assert query("feishu", "ou_1").startswith("status=active")
-    assert "expires=None" in query("feishu", "ou_1")  # 解封清空到期
+    # ADR-9：解封**保留原期限**，不再清成永久（旧实现会 SET expires_at=NULL = 永久提权）
+    assert exp_before and _expires(query("feishu", "ou_1")) == exp_before
+
+
+# ---------------- P0 回归：unban 不得制造授权 / extend 对过期须生效 ----------------
+
+def _judge(platform, identity) -> str:
+    """走与插件同源的判定，返回 reason —— 用于断言「用户实际会不会被放行」。"""
+    rec, unavail = lookup_plugin(platform, identity)
+    return decide(identity, rec, allowlist=frozenset(), now=now_iso(),
+                  fail_open=False, unavailable=unavail).reason
+
+
+def test_unban_does_not_grant_permanent_to_expired(db_env):
+    """P0-1 回归：给已过期用户解封，不得把他变成永久。"""
+    grant("feishu", "ou_exp", days=-5)          # 5 天前已到期
+    ban("feishu", "ou_exp")
+    unban("feishu", "ou_exp")
+    assert "expires=None" not in query("feishu", "ou_exp")   # 期限没被清空
+    assert _judge("feishu", "ou_exp") == "deny:expired"      # 解封≠授权
+
+
+def test_unban_keeps_permanent_user_permanent(db_env):
+    """反之：本来就是永久的用户，解封后仍应永久（解封只翻封禁态，不改变授权维度）。"""
+    grant("feishu", "ou_perm")                  # 永久授权
+    ban("feishu", "ou_perm")
+    unban("feishu", "ou_perm")
+    assert "expires=None" in query("feishu", "ou_perm")
+    assert _judge("feishu", "ou_perm") == "active"
+
+
+def test_ban_then_unban_unknown_user_does_not_create_access(db_env):
+    """P0-1 最危险的一支：封禁一个**从未有过记录**的人再解封，不得凭空造出永久授权。"""
+    ban("feishu", "ou_ghost")
+    unban("feishu", "ou_ghost")
+    assert _judge("feishu", "ou_ghost") == "deny:expired"    # 曾经 `active + expires=NULL` = 永久
+
+
+def test_unban_without_record_is_not_fake_success(db_env):
+    """unban 对无记录身份不得伪造成功（也不再凭空建记录）。"""
+    out = unban("feishu", "ou_nobody")
+    assert out.startswith("NOT_FOUND")
+    assert query("feishu", "ou_nobody").startswith("NOT_FOUND")   # 没建记录
+
+
+def test_unban_non_banned_record_is_noop(db_env):
+    grant("feishu", "ou_1", days=7)
+    assert unban("feishu", "ou_1").startswith("NOT_FOUND")        # 本就不是 banned
+
+
+def test_extend_expired_takes_effect_immediately(db_env):
+    """P0-2 回归：给已过期用户续期，必须从**现在**起算 —— 旧实现以旧到期为基准，
+    新到期仍落在过去，工具却报成功（运营最常用场景恰好失效且反馈骗人）。"""
+    grant("feishu", "ou_exp", days=-10)
+    out = extend("feishu", "ou_exp", 3)
+    assert "立即生效" in out
+    assert _judge("feishu", "ou_exp") == "active"
+
+
+def test_extend_active_stacks_on_existing_expiry(db_env):
+    """未到期时应在原到期上顺延（叠加），不吞掉剩余时间。"""
+    grant("feishu", "ou_a", days=10)
+    before = _expires(query("feishu", "ou_a"))
+    extend("feishu", "ou_a", 3)
+    after = _expires(query("feishu", "ou_a"))
+    assert before and after and after > before
+    assert "立即生效" in extend("feishu", "ou_a", 1)
 
 
 def test_extend_moves_expiry_later(db_env):

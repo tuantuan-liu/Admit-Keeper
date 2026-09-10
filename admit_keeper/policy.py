@@ -11,6 +11,11 @@ from typing import AbstractSet, Literal, Optional
 STATUS_ACTIVE = "active"
 STATUS_BANNED = "banned"
 
+# 「该记录由临时准入窗口引入」的来源标记。与 db.WINDOW_GRANTED_BY 必须一致 ——
+# 故意用字面量而非 import：policy.py 会被 MCP 以**顶层模块**方式导入（`from policy import …`），
+# 一旦这里出现包内相对导入，MCP 侧就会 ImportError。二者一致性由单测锁死（见 test_window）。
+GRANTED_BY_WINDOW = "window"
+
 ALLOW: Literal["allow"] = "allow"
 SKIP: Literal["skip"] = "skip"
 
@@ -29,26 +34,35 @@ class Decision:
 
 def decide(
     identity: str,
-    record: Optional[tuple[str, Optional[str]]],
+    record: Optional[tuple[str, Optional[str], Optional[str]]],
     allowlist: AbstractSet[str],
     now: str,
     fail_open: bool = False,
     unavailable: bool = False,
     window_open: bool = False,
+    window_reentry: bool = False,
 ) -> Decision:
     """裁定 (platform, identity) 是否放行。
 
-    record:  (status, expires_at) 或 None（表存在但无该身份记录）。
+    record:  (status, expires_at, granted_by) 或 None（表存在但无该身份记录）。
     unavailable: True 表示判定所需数据不可得（DB 缺失 / 读取异常 / 表未建），
                  该方向由 fail_open 决定（默认放行，安全模式改拒绝）。
     allowlist: 永久白名单（env ADMIT_ALLOWED_USERS）。优先级：
                banned（最高）> 过期 > 无记录；白名单覆盖“过期”，但不覆盖 banned。
     window_open: 当前有临时准入窗口开放（见 ADR-8）。**仅** 对“无记录”的全新身份放行
                  （reason ``window_open``），不覆盖 banned、也不放行“已过期”者。
+    window_reentry: 该记录由**上一次窗口**引入（granted_by == 'window'），且当前又有窗口开放。
+                 此时允许“窗口老面孔”再进（reason ``window_reentry``），由调用方把到期顺延到
+                 新窗口结束 —— 否则“每晚定点开放体验”第二天必然哑火。**仅**对窗口引入的记录生效：
+                 付费 / 手工授权的过期记录不受影响。同样不覆盖 banned。
+
+    注意：``window_open`` / ``window_reentry`` 都只在“过期”及“无记录”这两个分支生效，
+    ``banned`` 分支在其之前，天然恒拒。
     """
     if unavailable:
         # 数据不可得：无法判定 → 由 fail_open 决定。放行时务必大声告警，避免静默失效。
         return Decision(ALLOW if fail_open else SKIP, "fail_open" if fail_open else "deny:gate_unavailable")
+
     if record is None:
         if identity in allowlist:
             return Decision(ALLOW, "allowlist")
@@ -57,7 +71,7 @@ def decide(
             return Decision(ALLOW, "window_open")
         return Decision(SKIP, "deny:not_authorized")
 
-    status, expires_at = record
+    status, expires_at, granted_by = record
     if status == STATUS_BANNED:
         return Decision(SKIP, "deny:banned")
     if status != STATUS_ACTIVE:
@@ -66,6 +80,8 @@ def decide(
     if expires_at is not None and expires_at <= now:
         if identity in allowlist:
             return Decision(ALLOW, "allowlist_overrides_expired")
+        if window_open and granted_by == GRANTED_BY_WINDOW:
+            return Decision(ALLOW, "window_reentry")
         return Decision(SKIP, "deny:expired")
     return Decision(ALLOW, "active")
 

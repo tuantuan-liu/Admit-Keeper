@@ -76,6 +76,18 @@ def connect(db: Optional[str] = None, *, hot: bool = False) -> sqlite3.Connectio
 def ensure_schema(con: sqlite3.Connection) -> None:
     # executescript 而非 execute：SCHEMA_SQL 含多条语句，execute 一次只允许一条。
     con.executescript(SCHEMA_SQL)
+    _migrate(con)
+
+
+def _migrate(con: sqlite3.Connection) -> None:
+    """把旧库补齐到当前 schema —— `CREATE TABLE IF NOT EXISTS` 不会给**已存在**的表加列。
+
+    目前只需补 `granted_by`（ADR-8 的来源标记）。旧记录补出来是 NULL = 非窗口引入，
+    即不会被窗口重入放行，正是安全默认。读路径另有降级兜底（见 `lookup`）。
+    """
+    cols = {r[1] for r in con.execute("PRAGMA table_info(admit_allowed)")}
+    if "granted_by" not in cols:
+        con.execute("ALTER TABLE admit_allowed ADD COLUMN granted_by TEXT")
 
 
 def open_init(db: Optional[str] = None) -> sqlite3.Connection:
@@ -86,22 +98,35 @@ def open_init(db: Optional[str] = None) -> sqlite3.Connection:
     return con
 
 
-def lookup(con: sqlite3.Connection, platform: str, identity: str) -> Optional[tuple[str, Optional[str]]]:
-    """取 (status, expires_at)，无记录返回 None。仅读。"""
-    row = con.execute(
-        "SELECT status, expires_at FROM admit_allowed WHERE platform=? AND identity=?",
-        (platform, identity),
-    ).fetchone()
+_SELECT_RECORD = "SELECT status, expires_at, granted_by FROM admit_allowed WHERE platform=? AND identity=?"
+_SELECT_RECORD_LEGACY = "SELECT status, expires_at FROM admit_allowed WHERE platform=? AND identity=?"
+
+
+def lookup(con: sqlite3.Connection, platform: str, identity: str) -> Optional[tuple[str, Optional[str], Optional[str]]]:
+    """取 (status, expires_at, granted_by)，无记录返回 None。仅读。
+
+    granted_by 是**来源标记**：``WINDOW_GRANTED_BY`` 表示该记录由临时准入窗口引入，
+    窗口重开时只重新纳入这类记录（见 ADR-8），手工 / 付费授权不受影响。
+
+    对**缺 granted_by 列的旧库**自动降级为 2 列查询（granted_by 视作 None）：
+    否则 `no such column` 会被 ``lookup_plugin`` 的 `except sqlite3.Error` 兜底吃成
+    ``unavailable``，把整条判定拖进 fail-open / fail-closed —— 即 ADR-1 的最坏情形
+    （与 ``lookup_window_plugin`` 的降级同理）。新库由 ``ensure_schema`` 迁移补齐该列。
+    """
+    try:
+        row = con.execute(_SELECT_RECORD, (platform, identity)).fetchone()
+    except sqlite3.OperationalError:  # 旧库缺列 → 降级
+        row = con.execute(_SELECT_RECORD_LEGACY, (platform, identity)).fetchone()
     if row is None:
         return None
-    return row["status"], row["expires_at"]
+    return row[0], row[1], (row[2] if len(row) > 2 else None)
 
 
-def lookup_plugin(platform: str, identity: str, db: Optional[str] = None) -> tuple[Optional[tuple[str, Optional[str]]], bool]:
+def lookup_plugin(platform: str, identity: str, db: Optional[str] = None) -> tuple[Optional[tuple[str, Optional[str], Optional[str]]], bool]:
     """准入层热路径只读入口。
 
     返回 (record, unavailable)：
-      - record      None 表示表存在但无该身份记录；
+      - record      None 表示表存在但无该身份记录；否则为 (status, expires_at, granted_by)；
       - unavailable True 表示 DB 缺失 / 读取异常 / 表未建（无法判定，交给 fail_open）。
     DB 文件不存在时直接视为 unavailable，不创建空文件。
     """
@@ -119,6 +144,7 @@ def lookup_plugin(platform: str, identity: str, db: Optional[str] = None) -> tup
 
 
 WINDOW_ANY = "*"  # 窗口 platform 通配：一次开窗即覆盖所有平台
+WINDOW_GRANTED_BY = "window"  # granted_by 的来源标记：该记录由临时窗口引入（窗口重开只重新纳入这类）
 
 
 def lookup_window(con: sqlite3.Connection, platform: str, now: str) -> Optional[str]:
@@ -156,10 +182,11 @@ def lookup_window_plugin(platform: str, now: Optional[str] = None, db: Optional[
 
 
 def grant_window_entry(platform: str, identity: str, end_at: str, *,
-                       db: Optional[str] = None, by: str = "window") -> None:
-    """窗口进入者落库：upsert 为 active、到期=窗口 end_at。
+                       db: Optional[str] = None, by: str = WINDOW_GRANTED_BY) -> None:
+    """窗口进入者落库：upsert 为 active、到期=窗口 end_at、来源标记 granted_by=``by``。
 
     ON CONFLICT 带 `WHERE status <> 'banned'`：即便并发下有记录，也**绝不复活被封禁者**。
+    窗口重开时由 gate 再次调用本函数，把到期顺延到新窗口结束（reason ``window_reentry``）。
     """
     now = now_iso()
     con = open_init(db)
