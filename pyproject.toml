@@ -1,7 +1,7 @@
 [project]
 name = "admit-keeper"
 version = "1.0.0"
-description = "Platform-agnostic admission gate for Hermes gateway (plugin + MCP)."
+description = "Platform-agnostic admission gate: framework-agnostic kernel + gate helper, with a Hermes adapter example and an MCP admin server."
 requires-python = ">=3.10"
 license = { text = "MIT" }
 
