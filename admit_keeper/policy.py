@@ -3,6 +3,7 @@
 准入层（热路径）与 MCP（管理端）共用这一份语义，避免两侧判词漂移。
 所有字符串均用固定 UTC ISO-8601 格式，比较为字典序（格式一致时不失真）。
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -60,7 +61,7 @@ def decide(
     ``banned`` 分支在其之前，天然恒拒。
     """
     if unavailable:
-        # 数据不可得：无法判定 → 由 fail_open 决定。放行时务必大声告警，避免静默失效。
+        # 数据不可得：无法判定 -> 由 fail_open 决定。放行时务必大声告警，避免静默失效。
         return Decision(ALLOW if fail_open else SKIP, "fail_open" if fail_open else "deny:gate_unavailable")
 
     if record is None:

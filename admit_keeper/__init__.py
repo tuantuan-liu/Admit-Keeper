@@ -18,8 +18,6 @@ gate.py 的 ``gate()`` / ``is_allowed()`` 接进自己的"消息进 agent 前"�
 
 from __future__ import annotations
 
-import sys
-
 from . import gate
 
 
@@ -31,7 +29,7 @@ def _on_pre_gateway_dispatch(event, gateway, session_store=None, **kw):
     try:
         source = getattr(event, "source", None)
         if source is None:
-            return None  # 无来源信息 → 放行（避免误拦）
+            return None  # 无来源信息 -> 放行（避免误拦）
 
         platform = getattr(source, "platform", None)
         if platform is not None:
@@ -45,28 +43,16 @@ def _on_pre_gateway_dispatch(event, gateway, session_store=None, **kw):
             return {"action": "skip", "reason": d.reason}
         # 数据不可得 + fail-open 放行：== 闸门静默失效的边缘 ==，必须大声告警（ADR-1）。
         if d.is_allow() and d.reason == "fail_open":
-            _warn("admit-keeper 数据不可得，fail-open 放行，已封禁者可能漏放")
+            gate.warn("admit-keeper 数据不可得，fail-open 放行，已封禁者可能漏放")
         return None
 
     except Exception as exc:  # noqa: BLE001 —— 兜底，绝不让插件拖垮网关
         if gate.fail_open():
             # 放行但必须告警；否则闸门静默失效。
-            _warn(f"admit-keeper 插件异常，fail-open 放行: {exc!r}")
+            gate.warn(f"admit-keeper 插件异常，fail-open 放行: {exc!r}")
             return None
-        _warn(f"admit-keeper 插件异常，fail-closed 拒绝: {exc!r}")
+        gate.warn(f"admit-keeper 插件异常，fail-closed 拒绝: {exc!r}")
         return {"action": "skip", "reason": "deny:plugin_error"}
-
-
-def _warn(msg: str) -> None:
-    try:
-        import logging
-
-        logging.getLogger("admit-keeper").warning(msg)
-    except Exception:  # noqa: BLE001 —— 日志失败不抛给插件
-        try:
-            print("[admit-keeper]", msg, file=sys.stderr)
-        except Exception:  # noqa: BLE001, S110 —— 打印也失败则彻底静默，绝不向上抛
-            pass
 
 
 def register(ctx):

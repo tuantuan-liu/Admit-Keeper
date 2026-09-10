@@ -1,8 +1,9 @@
 """MCP 工具级集成测试 —— 直接调用 FastMCP 的 grant/ban/unban/extend/query/…
-跑真实 SQLite（临时文件），验证「工具 → db → 插件可读」整条链路。
+跑真实 SQLite（临时文件），验证「工具 -> db -> 插件可读」整条链路。
 
 前置：uv 环境含 mcp[cli]（钉 mcp<2）。运行：uv run pytest tests/test_mcp_integration.py
 """
+
 from __future__ import annotations
 
 import re
@@ -58,7 +59,7 @@ def test_grant_with_days_sets_expiry(db_env):
 
 def test_platform_isolation(db_env):
     grant("feishu", "ou_1", days=7)
-    # 同一个 identity，未在 wecom 授权 → 查不到
+    # 同一个 identity，未在 wecom 授权 -> 查不到
     assert query("wecom", "ou_1").startswith("NOT_FOUND")
 
 
@@ -83,25 +84,25 @@ def test_ban_unban_roundtrip(db_env):
 
 # ---------------- P0 回归：unban 不得制造授权 / extend 对过期须生效 ----------------
 
+
 def _judge(platform, identity) -> str:
     """走与插件同源的判定，返回 reason —— 用于断言「用户实际会不会被放行」。"""
     rec, unavail = lookup_plugin(platform, identity)
-    return decide(identity, rec, allowlist=frozenset(), now=now_iso(),
-                  fail_open=False, unavailable=unavail).reason
+    return decide(identity, rec, allowlist=frozenset(), now=now_iso(), fail_open=False, unavailable=unavail).reason
 
 
 def test_unban_does_not_grant_permanent_to_expired(db_env):
     """P0-1 回归：给已过期用户解封，不得把他变成永久。"""
-    grant("feishu", "ou_exp", days=-5)          # 5 天前已到期
+    grant("feishu", "ou_exp", days=-5)  # 5 天前已到期
     ban("feishu", "ou_exp")
     unban("feishu", "ou_exp")
-    assert "expires=None" not in query("feishu", "ou_exp")   # 期限没被清空
-    assert _judge("feishu", "ou_exp") == "deny:expired"      # 解封≠授权
+    assert "expires=None" not in query("feishu", "ou_exp")  # 期限没被清空
+    assert _judge("feishu", "ou_exp") == "deny:expired"  # 解封≠授权
 
 
 def test_unban_keeps_permanent_user_permanent(db_env):
     """反之：本来就是永久的用户，解封后仍应永久（解封只翻封禁态，不改变授权维度）。"""
-    grant("feishu", "ou_perm")                  # 永久授权
+    grant("feishu", "ou_perm")  # 永久授权
     ban("feishu", "ou_perm")
     unban("feishu", "ou_perm")
     assert "expires=None" in query("feishu", "ou_perm")
@@ -112,19 +113,19 @@ def test_ban_then_unban_unknown_user_does_not_create_access(db_env):
     """P0-1 最危险的一支：封禁一个**从未有过记录**的人再解封，不得凭空造出永久授权。"""
     ban("feishu", "ou_ghost")
     unban("feishu", "ou_ghost")
-    assert _judge("feishu", "ou_ghost") == "deny:expired"    # 曾经 `active + expires=NULL` = 永久
+    assert _judge("feishu", "ou_ghost") == "deny:expired"  # 曾经 `active + expires=NULL` = 永久
 
 
 def test_unban_without_record_is_not_fake_success(db_env):
     """unban 对无记录身份不得伪造成功（也不再凭空建记录）。"""
     out = unban("feishu", "ou_nobody")
     assert out.startswith("NOT_FOUND")
-    assert query("feishu", "ou_nobody").startswith("NOT_FOUND")   # 没建记录
+    assert query("feishu", "ou_nobody").startswith("NOT_FOUND")  # 没建记录
 
 
 def test_unban_non_banned_record_is_noop(db_env):
     grant("feishu", "ou_1", days=7)
-    assert unban("feishu", "ou_1").startswith("NOT_FOUND")        # 本就不是 banned
+    assert unban("feishu", "ou_1").startswith("NOT_FOUND")  # 本就不是 banned
 
 
 def test_extend_expired_takes_effect_immediately(db_env):
@@ -166,8 +167,8 @@ def test_query_not_found(db_env):
 
 
 def test_get_expired_lists_banned_and_expired(db_env):
-    ban("feishu", "ou_banned")           # 封禁
-    grant("feishu", "ou_exp", days=-1)   # 立即过期（days 为负即昨到期）
+    ban("feishu", "ou_banned")  # 封禁
+    grant("feishu", "ou_exp", days=-1)  # 立即过期（days 为负即昨到期）
     out = get_expired()
     assert "ou_banned" in out
     assert "ou_exp" in out
@@ -188,13 +189,14 @@ def test_remove_deletes_and_denies(db_env):
     grant("feishu", "ou_1")
     assert "removed" in remove("feishu", "ou_1")
     assert query("feishu", "ou_1").startswith("NOT_FOUND")
-    # 删除后无记录 → 插件侧 deny-by-default（无白名单兜底）
+    # 删除后无记录 -> 插件侧 deny-by-default（无白名单兜底）
     record, unavailable = lookup_plugin("feishu", "ou_1")
     assert record is None
     assert unavailable is False
 
 
 # ---------------- 临时准入窗口（open_window / close_window / list_windows） ----------------
+
 
 def _local_iso(delta_seconds: float) -> str:
     """本机本地时间戳（naive ISO，open_window 会按本地时区解释）。"""
@@ -217,14 +219,14 @@ def test_open_window_and_list(db_env):
 
 
 def test_open_window_hhmm_shorthand(db_env):
-    # 简写 HH:MM（今天本地）；含当前时刻 → 应处于 open。
+    # 简写 HH:MM（今天本地）；含当前时刻 -> 应处于 open。
     open_window("feishu", start=_local_hhmm(-3600), end=_local_hhmm(3600))
     assert "[open]" in list_windows("feishu")
 
 
 def test_open_window_offset_converted_to_utc(db_env):
     res = open_window("feishu", start="2026-09-10T14:00:00+08:00", end="2026-09-10T16:00:00+08:00")
-    # +08:00 14:00/16:00 → UTC 06:00/08:00
+    # +08:00 14:00/16:00 -> UTC 06:00/08:00
     assert "2026-09-10T06:00:00Z" in res
     assert "2026-09-10T08:00:00Z" in res
 
@@ -248,7 +250,7 @@ def test_close_window_closes_open(db_env):
     assert "[open]" in list_windows("feishu")
     assert "closed 1 open window(s)" in close_window("feishu")
     assert "[closed]" in list_windows("feishu")
-    # 无开放窗口后再关 → 幂等提示
+    # 无开放窗口后再关 -> 幂等提示
     assert "无开放窗口" in close_window("feishu")
 
 
@@ -267,7 +269,7 @@ def test_window_visible_to_plugin_read_path(db_env):
 def test_open_window_wildcard_covers_all_platforms(db_env):
     res = open_window("*", start=_local_iso(-3600), end=_local_iso(3600), note="全平台")
     assert "所有平台" in res
-    for p in ("feishu", "wecom", "telegram"):   # 含未在 ADMIT_GATE_PLATFORMS 的平台
+    for p in ("feishu", "wecom", "telegram"):  # 含未在 ADMIT_GATE_PLATFORMS 的平台
         assert lookup_window_plugin(p) is not None
     assert "[open]" in list_windows("*")
 

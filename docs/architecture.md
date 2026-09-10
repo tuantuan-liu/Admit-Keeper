@@ -17,7 +17,7 @@
                │ 只读
                ▼
         ┌─────────────────────┐
-        │  admit_keeper.db     │   ← ② 共享名册（SQLite，WAL）
+        │  admit_keeper.db     │   <- ② 共享名册（SQLite，WAL）
         │  admit_allowed 表     │      platform + identity + status + expires_at
         └──────────────┬──────┘
                │ 读写

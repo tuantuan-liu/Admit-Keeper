@@ -1,4 +1,5 @@
 """决策矩阵单测。覆盖 banned/active/过期/无记录 × 白名单 × fail_open × unavailable。"""
+
 import pytest
 
 from policy import decide
@@ -70,18 +71,27 @@ def test_empty_allowlist_defaults():
 @pytest.mark.parametrize(
     "value,expected",
     [
-        ("1", True), ("true", True), ("TRUE", True), ("yes", True), ("on", True),
-        ("0", False), ("false", False), ("no", False), ("off", False),
+        ("1", True),
+        ("true", True),
+        ("TRUE", True),
+        ("yes", True),
+        ("on", True),
+        ("0", False),
+        ("false", False),
+        ("no", False),
+        ("off", False),
     ],
 )
 def test_parse_bool(value, expected):
     from policy import parse_bool
+
     assert parse_bool(value, default=False) is expected
 
 
 def test_parse_bool_empty_and_none_fall_back_to_default():
     from policy import parse_bool
-    # 未设 / 空串 / 非预期输入 → 一律回落 default
+
+    # 未设 / 空串 / 非预期输入 -> 一律回落 default
     assert parse_bool(None, default=True) is True
     assert parse_bool("", default=True) is True
     assert parse_bool("   ", default=True) is True

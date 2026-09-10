@@ -1,5 +1,7 @@
 """框架无关判定助手 gate.py 单测：gate()/is_allowed() 的完整裁定分支，
 并覆盖重构成共享模块后的 Hermes 接入层 __init__._on_pre_gateway_dispatch。"""
+
+import logging
 from types import SimpleNamespace
 
 import pytest
@@ -28,10 +30,13 @@ def _mkdb(dbfile, rows):
 def feishu_env(monkeypatch, tmp_path):
     """受管平台=feishu，fail-closed，库里有一个 active、一个 banned。"""
     dbfile = tmp_path / "gate.db"
-    _mkdb(dbfile, [
-        ("feishu", "u_ok", "active", "2027-01-01T00:00:00Z"),
-        ("feishu", "u_bad", "banned", None),
-    ])
+    _mkdb(
+        dbfile,
+        [
+            ("feishu", "u_ok", "active", "2027-01-01T00:00:00Z"),
+            ("feishu", "u_bad", "banned", None),
+        ],
+    )
     monkeypatch.setenv("ADMIT_KEEPER_DB", str(dbfile))
     monkeypatch.setenv("ADMIT_GATE_PLATFORMS", "feishu")
     monkeypatch.setenv("ADMIT_FAIL_OPEN", "0")
@@ -52,7 +57,7 @@ def test_unknown_identity_denied_when_fail_closed(feishu_env):
 
 
 def test_unmanaged_platform_allowed(feishu_env):
-    # 平台维度：feishu 受管，wecom 未受管 → 直接放行（全平台扩展点）。
+    # 平台维度：feishu 受管，wecom 未受管 -> 直接放行（全平台扩展点）。
     assert gate.is_allowed("wecom", "u_bad") is True
 
 
@@ -85,7 +90,7 @@ def test_allowlist_overrides_expired(monkeypatch, tmp_path):
     monkeypatch.setenv("ADMIT_KEEPER_DB", str(dbfile))
     monkeypatch.setenv("ADMIT_GATE_PLATFORMS", "feishu")
     monkeypatch.setenv("ADMIT_FAIL_OPEN", "0")
-    # 显式传 allowlist → 覆盖过期；不传则拒绝。
+    # 显式传 allowlist -> 覆盖过期；不传则拒绝。
     assert gate.gate("feishu", "u_exp", allowlist={"u_exp"}).is_allow()
     assert gate.gate("feishu", "u_exp").is_skip()
 
@@ -114,5 +119,20 @@ def test_hermes_adapter_allows_active(feishu_env):
 
 
 def test_hermes_adapter_allows_empty_source(feishu_env):
-    # 无 source → 放行（不误拦）。
+    # 无 source -> 放行（不误拦）。
     assert _on_pre_gateway_dispatch(SimpleNamespace(source=None), None) is None
+
+
+# ---- 统一告警输出 gate.warn：优先 loguru，未装回退标准库 logging ----
+
+
+def test_warn_falls_back_to_stdlib_logging(caplog):
+    """未装 loguru（dev/test 环境）时，gate.warn 回退标准库 logging，可被 caplog 捕获。"""
+    with caplog.at_level(logging.WARNING, logger="admit-keeper"):
+        gate.warn("单元测试告警")
+    assert any("单元测试告警" in r.getMessage() for r in caplog.records)
+
+
+def test_warn_never_raises():
+    """warn 是兜底输出，任何情况下都不应抛异常。"""
+    gate.warn("ok")

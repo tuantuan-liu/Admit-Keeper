@@ -1,6 +1,6 @@
 """Hermes 接入层（admit_keeper/__init__.py）插件单测。
 
-重构后 __init__ 退化为纯适配层：只做「事件 → 平台/身份」的协议映射，判定全部委托给框架无关的
+重构后 __init__ 退化为纯适配层：只做「事件 -> 平台/身份」的协议映射，判定全部委托给框架无关的
 gate.gate()。本文件针对适配层做完整覆盖：short-circuit / 协议映射 / 判定分支 / fail-open 告警 /
 异常兜底 / register()，覆盖 main 自带 test_gate.py 未覆盖的告警、register、异常三条链路。
 
@@ -72,25 +72,23 @@ def feishu_env(tmp_path, monkeypatch):
 
 
 def test_no_source_allows():
-    """无 source → 放行（避免误拦）。"""
+    """无 source -> 放行（避免误拦）。"""
     assert _on_pre_gateway_dispatch(_event(no_source=True), gateway=None) is None
 
 
 def test_non_managed_platform_allows(feishu_env):
-    """平台不在受管列表 → gate 放行（unmanaged_platform），适配层返回 None。"""
+    """平台不在受管列表 -> gate 放行（unmanaged_platform），适配层返回 None。"""
     assert _on_pre_gateway_dispatch(_event("wecom", "u_bad"), None) is None
 
 
 def test_empty_identity_allows(feishu_env):
-    """身份为空 → gate 放行（no_identity），不应误拦。"""
+    """身份为空 -> gate 放行（no_identity），不应误拦。"""
     assert _on_pre_gateway_dispatch(_event("feishu", ""), None) is None
 
 
 def test_enum_platform_resolves_value(feishu_env):
-    """平台是枚举对象（.value）→ 解析出平台名并经适配层到达判定。"""
-    out = _on_pre_gateway_dispatch(
-        _event(platform=SimpleNamespace(value="FEISHU"), user_id="u_bad"), None
-    )
+    """平台是枚举对象（.value）-> 解析出平台名并经适配层到达判定。"""
+    out = _on_pre_gateway_dispatch(_event(platform=SimpleNamespace(value="FEISHU"), user_id="u_bad"), None)
     assert out == {"action": "skip", "reason": "deny:banned"}
 
 
@@ -127,11 +125,11 @@ def test_no_record_in_allowlist_allows(feishu_env, monkeypatch):
     assert _on_pre_gateway_dispatch(_event("feishu", "ou_perm"), None) is None
 
 
-# ---------- 3. DB 不可得 → fail-open 放行并告警 / fail-closed 拒收 ----------
+# ---------- 3. DB 不可得 -> fail-open 放行并告警 / fail-closed 拒收 ----------
 
 
 def test_missing_db_fail_open_allows_and_warns(tmp_path, monkeypatch, caplog):
-    """库不存在 + 默认 fail-open → 放行，并必须告警（ADR-1，本修复的核心断言）。"""
+    """库不存在 + 默认 fail-open -> 放行，并必须告警（ADR-1，本修复的核心断言）。"""
     monkeypatch.setenv("ADMIT_KEEPER_DB", str(tmp_path / "nope.db"))
     monkeypatch.setenv("ADMIT_GATE_PLATFORMS", "feishu")
     monkeypatch.delenv("ADMIT_FAIL_OPEN", raising=False)
@@ -154,7 +152,7 @@ def test_missing_db_fail_closed_denies(tmp_path, monkeypatch):
 
 
 def test_plugin_exception_fail_open_allows_and_warns(monkeypatch, caplog):
-    """gate.gate 抛异常 + 默认 fail-open → 放行并告警，绝不外抛。"""
+    """gate.gate 抛异常 + 默认 fail-open -> 放行并告警，绝不外抛。"""
     monkeypatch.setenv("ADMIT_GATE_PLATFORMS", "feishu")
     monkeypatch.delenv("ADMIT_FAIL_OPEN", raising=False)
 
