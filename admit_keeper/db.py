@@ -25,6 +25,19 @@ CREATE TABLE IF NOT EXISTS admit_allowed (
     updated_at TEXT,
     UNIQUE(platform, identity)
 );
+
+CREATE TABLE IF NOT EXISTS admit_window (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    platform   TEXT NOT NULL,
+    start_at   TEXT NOT NULL,   -- UTC ISO-8601，含边界
+    end_at     TEXT NOT NULL,   -- UTC ISO-8601，不含（半开区间 [start, end)）
+    note       TEXT,
+    created_by TEXT,
+    created_at TEXT,
+    updated_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_admit_window_platform ON admit_window(platform, start_at, end_at);
 """
 
 
@@ -61,7 +74,8 @@ def connect(db: Optional[str] = None, *, hot: bool = False) -> sqlite3.Connectio
 
 
 def ensure_schema(con: sqlite3.Connection) -> None:
-    con.execute(SCHEMA_SQL)
+    # executescript 而非 execute：SCHEMA_SQL 含多条语句，execute 一次只允许一条。
+    con.executescript(SCHEMA_SQL)
 
 
 def open_init(db: Optional[str] = None) -> sqlite3.Connection:
@@ -102,3 +116,70 @@ def lookup_plugin(platform: str, identity: str, db: Optional[str] = None) -> tup
             con.close()
     except sqlite3.Error:
         return None, True
+
+
+WINDOW_ANY = "*"  # 窗口 platform 通配：一次开窗即覆盖所有平台
+
+
+def lookup_window(con: sqlite3.Connection, platform: str, now: str) -> Optional[str]:
+    """当前开放窗口的 end_at（**本平台 或 通配 `*`**，取 end_at 最大者），无则 None。
+
+    半开区间 [start_at, end_at)。通配窗口与平台专属窗口可共存，取更晚的结束时间。
+    """
+    row = con.execute(
+        "SELECT end_at FROM admit_window "
+        "WHERE (platform=? OR platform=?) AND start_at<=? AND ?<end_at "
+        "ORDER BY end_at DESC LIMIT 1",
+        (platform, WINDOW_ANY, now, now),
+    ).fetchone()
+    return row["end_at"] if row is not None else None
+
+
+def lookup_window_plugin(platform: str, now: Optional[str] = None, db: Optional[str] = None) -> Optional[str]:
+    """准入层热路径：查当前开放窗口，返回 end_at，无则 None。
+
+    **与 lookup_plugin 的 unavailable 语义刻意不同**：窗口是可选特性，DB 缺失 / 表未建 /
+    任何读取异常一律降级为「无窗口」(None)，**绝不** 返回 unavailable —— 否则旧库（无
+    admit_window 表）会因 `no such table` 把整条准入判定拖进 fail-open 全放行（最坏情形）。
+    """
+    d = db or db_path()
+    if not os.path.exists(d):
+        return None
+    try:
+        con = connect(d, hot=True)
+        try:
+            return lookup_window(con, platform, now or now_iso())
+        finally:
+            con.close()
+    except sqlite3.Error:
+        return None
+
+
+def grant_window_entry(platform: str, identity: str, end_at: str, *,
+                       db: Optional[str] = None, by: str = "window") -> None:
+    """窗口进入者落库：upsert 为 active、到期=窗口 end_at。
+
+    ON CONFLICT 带 `WHERE status <> 'banned'`：即便并发下有记录，也**绝不复活被封禁者**。
+    """
+    now = now_iso()
+    con = open_init(db)
+    try:
+        con.execute(
+            """
+            INSERT INTO admit_allowed
+                (platform, identity, status, granted_at, expires_at, granted_by, note, created_at, updated_at)
+            VALUES (?,?, 'active', ?, ?, ?, 'window', ?, ?)
+            ON CONFLICT(platform, identity) DO UPDATE SET
+                status     = 'active',
+                granted_at = excluded.granted_at,
+                expires_at = excluded.expires_at,
+                granted_by = excluded.granted_by,
+                note       = excluded.note,
+                updated_at = excluded.updated_at
+            WHERE admit_allowed.status <> 'banned'
+            """,
+            (platform, identity, now, end_at, by, now, now),
+        )
+        con.commit()
+    finally:
+        con.close()

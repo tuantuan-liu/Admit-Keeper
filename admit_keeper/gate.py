@@ -22,9 +22,19 @@ from __future__ import annotations
 import os
 from typing import Optional, Set
 
+from . import db
 from . import policy
 from .db import lookup_plugin, now_iso
 from .policy import Decision
+
+
+def _warn(msg: str) -> None:
+    try:
+        import logging
+
+        logging.getLogger("admit-keeper").warning(msg)
+    except Exception:
+        pass
 
 
 def managed_platforms() -> Set[str]:
@@ -53,6 +63,8 @@ def gate(platform: Optional[str], identity: Optional[str], *,
     - platform 为空 / 非受管 → 放行（``Decision(ALLOW, 'unmanaged_platform')``）
     - identity 为空 → 放行（无法判定谁进来，不误拦）
     - 否则 ``lookup_plugin`` + ``policy.decide``（banned > 过期 > 无记录 > 白名单）
+    - 若存在开放的临时准入窗口（``admit_window``），放行**全新**（无记录）身份，
+      并落一条 ``expires_at = 窗口结束`` 的记录；banned / 已过期者不受窗口影响（见 ADR-8）。
 
     ``allowlist`` / ``fail_open_flag`` / ``database`` 均可不传：未传则分别从环境变量
     （``ADMIT_ALLOWED_USERS`` / ``ADMIT_FAIL_OPEN``）与默认库路径取。
@@ -68,11 +80,29 @@ def gate(platform: Optional[str], identity: Optional[str], *,
 
     allow = set(allowlist) if allowlist is not None else env_allowlist()
     fo = fail_open() if fail_open_flag is None else fail_open_flag
+
+    now = now_iso()
     record, unavailable = lookup_plugin(platform, identity, db=database)
-    return policy.decide(
+
+    # 窗口只对「无记录」的全新身份可能生效；仅此时才多查一次窗口（保持常见路径单查询）。
+    window_end: Optional[str] = None
+    if not unavailable and record is None:
+        window_end = db.lookup_window_plugin(platform, now=now, db=database)
+
+    d = policy.decide(
         identity=identity, record=record, allowlist=allow,
-        now=now_iso(), fail_open=fo, unavailable=unavailable,
+        now=now, fail_open=fo, unavailable=unavailable,
+        window_open=window_end is not None,
     )
+
+    if d.reason == "window_open" and window_end is not None:
+        # 落库留痕：到期=窗口结束，供审计与后续自动过期。落库失败不阻断放行。
+        try:
+            db.grant_window_entry(platform, identity, window_end, db=database)
+        except Exception as exc:  # noqa: BLE001
+            _warn(f"admit-keeper 窗口进入落库失败（不影响放行）: {exc!r}")
+
+    return d
 
 
 def is_allowed(platform: Optional[str], identity: Optional[str], **kw) -> bool:

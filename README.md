@@ -128,6 +128,37 @@ list_all()                            # 全部记录
 remove("feishu", "ou_xxx")            # 删记录（删除后无白名单兜底则拒收）
 ```
 
+## 临时准入窗口（限时开放）
+
+想在某个时段**临时开放**给新面孔体验，窗口一关即失效 —— 用 `open_window`。
+`platform` 是**任意平台名**（feishu / wecom / telegram / 你自定义的渠道），或 **`"*"` 通配 = 所有平台一次生效**：
+
+```python
+open_window("*", start="14:00", end="16:00")               # 全平台，今天本地 14:00–16:00
+open_window("wecom", start="14:00", end="16:00")           # 也可只针对某个平台
+open_window("*", start="2026-09-12T14:00:00",
+                 end="2026-09-12T16:00:00")                # 指定日期（本地时区）
+open_window("*", start="2026-09-12T14:00:00+08:00",
+                 end="2026-09-12T16:00:00+08:00")          # 显式偏移
+list_windows()             # 全部窗口；状态 open（进行中）/ upcoming（未开始）/ closed（已结束）
+close_window("*")          # 关闭通配窗口（开窗时用的什么 platform，关时就用什么）
+close_window("wecom", id=3)    # 按 id 删除（可取消尚未开始的未来窗口）
+```
+> 上例用 `feishu`/`wecom` 仅为举例；换成任何渠道同理，代码无需改动。通配窗口与平台专属窗口
+> 可共存，判定时取**更晚**的结束时间。通配窗口对所有平台生效，但某平台须在
+> `ADMIT_GATE_PLATFORMS` 内才走准入（列表外的平台本就直接放行，通配不改变这点）。
+
+**语义**（见 [ADR-8](docs/design-decisions.md)）：
+
+- 窗口 `[start, end)` 内，**从未有过记录的全新身份**发消息 → 放行，并自动落一条
+  `active`、**到期时间 = 窗口结束**的记录（可审计、到期自动失效）。
+- **`banned` 恒拒**；**已过期**身份不受窗口影响（仍拒）。窗口只放行"全新"用户。
+- 过了 `end`，这些用户自动过期 → 拒收。
+
+**时间输入**：支持完整 ISO-8601（`2026-09-10T14:00:00`，带偏移 `+08:00` / 末尾 `Z` 均可）
+与简写 `HH:MM`（视为**今天本地**；跨零点如 `22:00→02:00` 自动顺延次日）。不带偏移者按
+**运行机器本地时区**解释，**存库统一转 UTC**。建议起止两端用同一种格式。
+
 ## 目录结构
 
 ```
@@ -148,7 +179,8 @@ Admit-Keeper/
 │   ├── conftest.py
 │   ├── test_policy.py             # 决策矩阵单测（框架无关）
 │   ├── test_db.py                 # db 读写 + 去重（框架无关）
-│   ├── test_gate.py               # 共享门卫助手 gate()/is_allowed()（框架无关）
+│   ├── test_gate.py               # 共享门卫助手 gate()/is_allowed() + Hermes 接入层映射
+│   ├── test_window.py             # 临时准入窗口：policy / db / gate 端到端
 │   ├── test_mcp_integration.py    # MCP 工具级集成（grant/ban/unban/...）
 │   └── test_plugin.py             # Hermes 接入层插件钩子（含 fail-open 告警断言）
 ├── scripts/
@@ -206,7 +238,7 @@ async def admit(req, call_next):
 | 变量 | 默认 | 说明 |
 |---|---|---|
 | `ADMIT_KEEPER_DB` | `$HERMES_HOME/admit_keeper.db` | 共享名册 DB 路径 |
-| `ADMIT_GATE_PLATFORMS` | `feishu` | 受管平台；列表外放行 |
+| `ADMIT_GATE_PLATFORMS` | `feishu`（示例默认，可改） | 受管平台，逗号分隔的**任意渠道名**；列表外放行。窗口亦受此约束 |
 | `ADMIT_ALLOWED_USERS` | 空 | 永久白名单（只覆盖过期，不覆盖 banned） |
 | `ADMIT_FAIL_OPEN` | `1` | 数据不可得时放行；`0` 为拒绝（更安全） |
 
@@ -214,7 +246,7 @@ async def admit(req, call_next):
 
 ```bash
 uv sync                                  # 安装 dev 依赖（uv 环境，含 mcp[cli]<2 + pytest）
-uv run pytest                            # 全量：单元 + MCP 工具级集成 + 插件钩子，共 66 项
+uv run pytest                            # 全量：单元 + MCP 集成 + 窗口 + 插件钩子，共 102 项
 ```
 
 详见 [docs/architecture.md](docs/architecture.md) 与 [docs/design-decisions.md](docs/design-decisions.md)。

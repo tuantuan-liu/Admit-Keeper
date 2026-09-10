@@ -34,6 +34,7 @@ def decide(
     now: str,
     fail_open: bool = False,
     unavailable: bool = False,
+    window_open: bool = False,
 ) -> Decision:
     """裁定 (platform, identity) 是否放行。
 
@@ -42,6 +43,8 @@ def decide(
                  该方向由 fail_open 决定（默认放行，安全模式改拒绝）。
     allowlist: 永久白名单（env ADMIT_ALLOWED_USERS）。优先级：
                banned（最高）> 过期 > 无记录；白名单覆盖“过期”，但不覆盖 banned。
+    window_open: 当前有临时准入窗口开放（见 ADR-8）。**仅** 对“无记录”的全新身份放行
+                 （reason ``window_open``），不覆盖 banned、也不放行“已过期”者。
     """
     if unavailable:
         # 数据不可得：无法判定 → 由 fail_open 决定。放行时务必大声告警，避免静默失效。
@@ -49,6 +52,9 @@ def decide(
     if record is None:
         if identity in allowlist:
             return Decision(ALLOW, "allowlist")
+        if window_open:
+            # 临时窗口：放行全新身份（落库交由调用方），白名单优先于窗口。
+            return Decision(ALLOW, "window_open")
         return Decision(SKIP, "deny:not_authorized")
 
     status, expires_at = record

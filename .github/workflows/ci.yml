@@ -1,0 +1,26 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 3.10 = pyproject requires-python 下限；3.12 = 现存较新版
+        python-version: ["3.10", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: 同步依赖（含 dev 组：mcp[cli]<2 + pytest）
+        run: uv sync --group dev --python ${{ matrix.python-version }}
+
+      - name: 运行测试
+        run: uv run pytest
