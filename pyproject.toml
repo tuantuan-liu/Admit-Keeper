@@ -19,6 +19,15 @@ packages = ["admit_keeper"]
 testpaths = ["tests"]
 addopts = "-q"
 
+[tool.ruff]
+# 显式钉住规则集 —— ruff 未配置时会用「当前版本的默认集」，而它会随版本扩张
+# （0.16 起默认纳入 I / UP / RUF100 等，会把本仓库既有的 Optional[X] 写法全判红）。
+# 这里恢复经典默认集（pycodestyle 报错类 + Pyflakes），保证 `ruff check` 跨版本可复现。
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F"]
+
 [dependency-groups]
 dev = [
     "mcp[cli]>=1.0,<2",

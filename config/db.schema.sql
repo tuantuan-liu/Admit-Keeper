@@ -1,5 +1,8 @@
 -- admit_keeper.db 参考 Schema（与 admit_keeper/db.py 的 SCHEMA_SQL 一致）
 -- 供手动建库 / 迁移核对。运行时由 MCP open_init() 幂等建表，一般无需手动执行。
+-- 注：`CREATE TABLE IF NOT EXISTS` **不会**给已存在的表加列。缺 `granted_by` 的旧库由
+--     db.ensure_schema()→_migrate() 自动 `ALTER TABLE ADD COLUMN granted_by TEXT` 补齐
+--     （旧行补为 NULL = 非窗口引入，安全默认）；读路径另有 2 列降级兜底。
 
 CREATE TABLE IF NOT EXISTS admit_allowed (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,

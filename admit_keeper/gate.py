@@ -64,7 +64,10 @@ def gate(platform: Optional[str], identity: Optional[str], *,
     - identity 为空 → 放行（无法判定谁进来，不误拦）
     - 否则 ``lookup_plugin`` + ``policy.decide``（banned > 过期 > 无记录 > 白名单）
     - 若存在开放的临时准入窗口（``admit_window``），放行**全新**（无记录）身份，
-      并落一条 ``expires_at = 窗口结束`` 的记录；banned / 已过期者不受窗口影响（见 ADR-8）。
+      并落一条 ``expires_at = 窗口结束`` 的记录；banned 不受窗口影响（见 ADR-8）。
+      对**由上一次窗口引入**（``granted_by == 'window'``）且已过期的记录，窗口重开时可再进
+      （``window_reentry``），到期顺延到新窗口结束 —— 使「每晚定点开放体验」可复用；
+      付费 / 手工授权的过期记录**不**受此影响。
 
     ``allowlist`` / ``fail_open_flag`` / ``database`` 均可不传：未传则分别从环境变量
     （``ADMIT_ALLOWED_USERS`` / ``ADMIT_FAIL_OPEN``）与默认库路径取。
@@ -84,19 +87,34 @@ def gate(platform: Optional[str], identity: Optional[str], *,
     now = now_iso()
     record, unavailable = lookup_plugin(platform, identity, db=database)
 
-    # 窗口只对「无记录」的全新身份可能生效；仅此时才多查一次窗口（保持常见路径单查询）。
+    # 窗口只可能在两种情形影响判定，且都属「非热路径」，故仅此时多查一次窗口（保持常见路径单查询）：
+    #   ① 全新身份（无记录）→ window_open；② 由**上一次窗口**引入、现已过期的记录 → window_reentry。
+    # 其余（banned / 有效 active / 付费等手工授权的过期记录）不查。
     window_end: Optional[str] = None
-    if not unavailable and record is None:
-        window_end = db.lookup_window_plugin(platform, now=now, db=database)
+    if not unavailable:
+        is_new = record is None
+        is_expired_window_rec = (
+            record is not None
+            and record[0] == policy.STATUS_ACTIVE
+            and record[1] is not None
+            and record[1] <= now
+            and record[2] == policy.GRANTED_BY_WINDOW
+        )
+        if is_new or is_expired_window_rec:
+            window_end = db.lookup_window_plugin(platform, now=now, db=database)
+
+    window_open = window_end is not None
+    window_reentry = window_open and record is not None and record[2] == policy.GRANTED_BY_WINDOW
 
     d = policy.decide(
         identity=identity, record=record, allowlist=allow,
         now=now, fail_open=fo, unavailable=unavailable,
-        window_open=window_end is not None,
+        window_open=window_open, window_reentry=window_reentry,
     )
 
-    if d.reason == "window_open" and window_end is not None:
-        # 落库留痕：到期=窗口结束，供审计与后续自动过期。落库失败不阻断放行。
+    if window_end is not None and d.reason in ("window_open", "window_reentry"):
+        # 落库留痕：到期=窗口结束，供审计与后续自动过期（window_reentry 即把到期顺延到新窗口）。
+        # 落库失败不阻断放行。
         try:
             db.grant_window_entry(platform, identity, window_end, db=database)
         except Exception as exc:  # noqa: BLE001

@@ -158,11 +158,15 @@ def ban(platform: str, identity: str, note: str = "") -> str:
             (now, note, platform, identity),
         ).rowcount
         if deleted == 0:
-            # 无既有记录 → 显式插一条 banned（granted_by 记为 system）
+            # 无既有记录 → 显式插一条 banned（granted_by 记为 system）。
+            # expires_at 写「当下」= 一条**已过期**的期限：这样日后 unban 只会把它翻成
+            # active+已过期（仍被拒），而**不会**凭空造出永久授权（见 ADR-9）。
+            # 已有记录的 UPDATE 分支刻意不动 expires_at —— 保留原有期限。
             con.execute(
-                "INSERT INTO admit_allowed(platform,identity,status,granted_by,note,created_at,updated_at) "
-                "VALUES(?,?,?,'system',?,?,?)",
-                (platform, identity, STATUS_BANNED, note, now, now),
+                "INSERT INTO admit_allowed"
+                "(platform,identity,status,expires_at,granted_by,note,created_at,updated_at) "
+                "VALUES(?,?,?,?,'system',?,?,?)",
+                (platform, identity, STATUS_BANNED, now, note, now, now),
             )
         con.commit()
     finally:
@@ -172,22 +176,36 @@ def ban(platform: str, identity: str, note: str = "") -> str:
 
 @mcp.tool()
 def unban(platform: str, identity: str) -> str:
-    """解封并清除到期时间，恢复 active。"""
+    """解封：**只把封禁态翻回 active，绝不改动授权期限**（见 ADR-9）。
+
+    原本永久授权的用户解封后仍是永久，原本已到期的用户解封后仍是到期 ——
+    解封只撤销「封禁」这一个决策，**不制造授权**。要恢复访问请显式 grant/extend。
+    对无记录或本就非 banned 的身份不做任何改动（不再伪造成功）。"""
     platform = _platform(platform)
     identity = _identity(identity)
     con = open_init()
     try:
-        con.execute("UPDATE admit_allowed SET status='active', expires_at=NULL, updated_at=? "
-                    "WHERE platform=? AND identity=?", (now_iso(), platform, identity))
+        cur = con.execute(
+            "UPDATE admit_allowed SET status=?, updated_at=? "
+            "WHERE platform=? AND identity=? AND status=?",
+            (STATUS_ACTIVE, now_iso(), platform, identity, STATUS_BANNED),
+        )
         con.commit()
+        n = cur.rowcount
     finally:
         con.close()
-    return f"unbanned {platform}:{identity}"
+    if n == 0:
+        return f"NOT_FOUND {platform}:{identity} 无封禁记录（未改动任何数据）"
+    return f"unbanned {platform}:{identity}（期限未改动；如需授权请显式 grant）"
 
 
 @mcp.tool()
 def extend(platform: str, identity: str, days: float) -> str:
-    """在现有到期时间基础上追加 days 天；无记录则新建（视为新授权）。
+    """在**有效**到期时间基础上追加 days 天；无记录则新建（视为新授权）。
+
+    基准 = max(现在, 原到期)：尚未到期 → 在原到期上顺延（不吞掉剩余时间）；
+    已过期 → 从**现在**起算（否则新到期仍落在过去，工具报成功但用户仍被拒 —— 见 ADR-10）。
+    返回值会回显所用基准与是否立即生效。
     b>注意：对 banned 身份不生效，需先 unban。</b>"""
     platform = _platform(platform)
     identity = _identity(identity)
@@ -200,19 +218,29 @@ def extend(platform: str, identity: str, days: float) -> str:
                           (platform, identity)).fetchone()
         if row and row["status"] == STATUS_BANNED:
             raise ValueError(f"{platform}:{identity} 当前为 banned，请先 unban 再续期")
-        base = datetime.now(timezone.utc)
+
+        now_dt = datetime.now(timezone.utc)
+        base, base_desc = now_dt, "现在"
         if row and row["expires_at"]:
             try:
-                base = datetime.strptime(row["expires_at"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+                old = datetime.strptime(row["expires_at"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
             except ValueError:
-                base = datetime.now(timezone.utc)
+                old = None  # 脏数据：按「从现在起算」处理，不猜
+            if old is not None and old > now_dt:
+                base, base_desc = old, f"原到期 {row['expires_at']}"
+            elif old is not None:
+                base_desc = f"现在（原到期 {row['expires_at']} 已过）"
+
         new_exp = (base + timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%SZ")
         _upsert(con, platform, identity, status=STATUS_ACTIVE, granted_at=now_iso(),
                 expires_at=new_exp, granted_by="admin", note="extend")
         con.commit()
     finally:
         con.close()
-    return f"extended {platform}:{identity} +{days}d -> {new_exp}"
+
+    effective = new_exp > now_iso()
+    return (f"extended {platform}:{identity} +{days}d -> {new_exp} [基准={base_desc}] "
+            + ("立即生效" if effective else "⚠ 新到期仍在过去，未生效"))
 
 
 @mcp.tool()

@@ -1,7 +1,7 @@
 """决策矩阵单测。覆盖 banned/active/过期/无记录 × 白名单 × fail_open × unavailable。"""
 import pytest
 
-from policy import SKIP, ALLOW, decide
+from policy import decide
 
 
 NOW = "2026-09-09T00:00:00Z"
@@ -10,8 +10,9 @@ FUTURE = "2026-10-01T00:00:00Z"
 WL = frozenset({"ou_perm"})  # 永久白名单
 
 
-def rec(status, expires_at=None):
-    return (status, expires_at)
+def rec(status, expires_at=None, granted_by=None):
+    """构造记录三元组 (status, expires_at, granted_by) —— 与 db.lookup 返回形状一致。"""
+    return (status, expires_at, granted_by)
 
 
 def test_unknown_identity_deny_by_default():
