@@ -65,8 +65,8 @@ fail-open 全放行。**同理**，`db.lookup()` 对**缺 `granted_by` 列的旧
 
 ## 决策逻辑集中化（框架无关）
 
-判定语义（banned > 过期 > 无记录 > 白名单）统一收在 `admit_keeper/policy.py:decide()`，
-三个层面**共同 import 同一份**，只有一处实现，不会因框架不同而判词漂移。
+判定语义（banned > 过期 > 无记录 > 白名单；数据不可得时白名单先于 fail_open，ADR-16）统一收在
+`admit_keeper/policy.py:decide()`，三个层面**共同 import 同一份**，只有一处实现，不会因框架不同而判词漂移。
 数据读写收在 `admit_keeper/db.py`；框架无关的门卫助手收在 `admit_keeper/gate.py`。
 
 ## 为什么用独立准入层，而不是改框架源码

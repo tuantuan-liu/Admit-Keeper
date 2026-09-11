@@ -18,7 +18,7 @@
 
 `policy.decide()` 顺序：
 
-1. `unavailable`（数据不可得）-> 由 `ADMIT_FAIL_OPEN` 决定
+1. `unavailable`（数据不可得）-> **白名单内先放行**（ADR-16），其余由 `ADMIT_FAIL_OPEN` 决定
 2. `banned` -> 拒绝（即便在永久白名单、即便由窗口引入）——封禁是最高权限
 3. `status != active`（未知 status，防御）-> 拒绝
 4. `expired` -> 拒绝，**但** 若在 `ADMIT_ALLOWED_USERS` 白名单 -> `allowlist_overrides_expired`；
@@ -28,12 +28,16 @@
 
 **白名单只覆盖"过期"，不覆盖"banned"**：永久白名单不会意外复活被封禁者。
 **窗口重入同理只覆盖"窗口引入的过期"**，不覆盖 `banned`、也不覆盖付费/手工授权的过期。
+**唯一的例外是第 1 步**：数据不可得时白名单能继续放行（但那时**校验不到**封禁态，见 ADR-16）。
 
-## ADR-3 extend() 不再隐式解封
+## ADR-3 extend() 不再隐式改变状态
 
 - 原实现 `extend` 会把 `status` 覆盖为 `active`，对 banned 身份执行续期会**悄悄复活**。
-- **决策**：`extend` 遇到 `banned` 记录直接报错，要求先 `unban` 再续期。
-- **理由**：续期是"时间维度"操作，不应改变"封禁态"这一更重的决策。
+- **决策**：`extend` 遇到**任何非 `active`** 的记录（`banned` / 未知 status）一律报错，不代改状态：
+  `banned` 要求先 `unban` 再续期，未知 status 要求显式 `grant` 覆盖。
+- **理由**：续期是"时间维度"操作，不应改变"封禁态"这一更重的决策。**只拦 `banned` 是不够的**：
+  `policy.decide` 对未知 status 明确 fail-closed（`deny:unknown_status`），若 `extend` 把它改写成
+  `active`，等于绕过那层防御。已用 `test_extend_rejects_unknown_status` 锁死。
 
 ## ADR-4 决策逻辑集中化，避免双处漂移
 
@@ -58,7 +62,7 @@
   本组件 `mcp/admit_keeper_mcp.py` 基于 v1 `FastMCP`，因此在 `install.sh`、
   `pyproject`（`mcp[cli]>=1.0,<2`）统一**钉 `<2`**，避免装到 2.x 后 `FastMCP` import 崩溃。
 - 若日后要升级到 mcp 2.x，需把 `FastMCP` 迁移到 `MCPServer`（API 多处变动），届时再单独处理。
-- 测试用 uv：`uv sync`（装 `mcp[cli]<2` + `pytest`）+ `uv run pytest`（125 项）。
+- 测试用 uv：`uv sync`（装 `mcp[cli]<2` + `pytest`）+ `uv run pytest`（141 项）。
 
 ## ADR-8 临时准入窗口：放行「无记录」新身份 + 重开时重新纳入「窗口引入」的老面孔
 
@@ -118,7 +122,7 @@
   工具却报"成功"——运营最常用的场景（"这人过期了，再给 7 天"）恰好静默失效，且反馈骗人。
 - **代价**：无。基准规则更符合"续期"直觉，且返回串把基准与生效性摊开，避免再次静默。
 - **备注**：回归测试 `test_extend_expired_takes_effect_immediately` /
-  `test_extend_active_stacks_on_existing_expiry` 锁死。`extend` 遇 `banned` 仍**报错**
+  `test_extend_active_stacks_on_existing_expiry` 锁死。`extend` 遇**非 active** 记录仍**报错**
   （ADR-3 不变）。
 
 ## ADR-11 日志优先 loguru，但保持「可选依赖 + 回退」
@@ -146,6 +150,69 @@
   见本文件 ADR-8）。留在同模块内，两种导入都成立。
 - **未做**：不内置 MySQL 实现（无驱动、无法验证），仅留接口与文档；MCP 侧另有若干简单
   SELECT/UPDATE 仍用 `?` 占位符，适配 MySQL 时需改为后端占位符 —— 已在该处注释标注。
+
+## ADR-13 `grant` 不得静默撤销封禁（需 `force=True`）
+
+- **决策**：`grant` 对 `status='banned'` 的身份**默认拒绝**并报错，要求先 `unban`，或显式传
+  `force=True` 确认「一步解封并授权」。守卫由 `keep_banned=not force` 落到 DB 层（**原子**），
+  再以写后复核 `status` 判定是否被拦下，据此给出诚实的失败。
+- **原因**：`grant` 原本无条件 `_upsert(status=active)`，于是 `ban` -> `grant` 一步就完成了
+  「解封 + 授权」——**正是 ADR-9 立论要防的那件事**（「两个决策分开，避免一次误操作同时完成
+  解封与永久授权」）。它与 ADR-14 的 `remove` 是同一类侧路：都能绕过封禁，而封禁是最高优先级
+  （ADR-2）。ADR-3 已规定 `extend` 不得隐式改变封禁态，`grant` 是同一条线上的另一处。
+- **代价**：把封禁用户放回来变成**两步**（`unban` 后再 `grant`，或一步 `force=True`）。这是刻意的。
+- **实现要点（为何用复核而非 rowcount）**：MySQL 的 `INSERT ... ON DUPLICATE KEY UPDATE` 的
+  affected_rows 语义与 SQLite 不同（**更新前后无变化也算 0**），拿 `rowcount == 0` 当「被封禁」
+  会误伤 MySQL 后端 —— 反而拦住合法授权。复核 `status` 则各引擎一致，也更简单。
+- **备注**：工具级 `force` 只影响「是否允许这次操作」，不改变判定优先级（ADR-2）：
+  `banned` 依然是最高优先级，授权成功也只是把它变成 `active`。
+
+## ADR-14 撤销封禁必须显式确认（`remove` 需 `force=True`）
+
+- **决策**：`remove` 对 `status='banned'` 的记录**默认拒绝**并报错，要求显式传 `force=True`；
+  无记录时返回 `NOT_FOUND`（与 `unban` 口径一致），不再谎报成功。
+- **原因**：`remove` 会把记录**彻底删掉**，该身份随即按「无记录」重新判定 —— 于是开放中的临时
+  窗口（`window_open`）会**立刻**把他放进来，封禁还被从 `get_expired` 里抹掉、审计断层。
+  实测过这条链：`ban` -> `remove` -> 开窗 -> `gate()` 返回 `window_open`（放行）。即 `remove`
+  是一条**比 `grant` 更重**的操作（`grant` 至少还留一条记录），却原本没有任何门槛。
+- **代价**：删除封禁记录多一步确认。只是想让某人恢复访问，应改用 `unban`（保留记录与期限，ADR-9）。
+- **实现要点**：守卫写成**单条条件化 DELETE**（`... AND (status<>'banned' OR ?)`），而不是
+  「先 SELECT 判 banned、再 DELETE」——后者的两步之间是可被 `ban` 插入的竞态窗口。仅当
+  `rowcount == 0` 时才补一次读，用于区分「本无记录」与「被守卫拦下」，正常路径只有一条 DELETE。
+- **备注**：`grant` 对 banned 的同类门槛见 ADR-13；工具级的 `force` 只影响「是否允许这次操作」，
+  不改变判定优先级（ADR-2），`banned` 依然是最高优先级。
+
+## ADR-15 `granted_by` 身兼「来源」与「操作者」两职，`by` 拒绝保留字
+
+- **决策**：`granted_by` 一列同时承担两个含义 —— **来源标记**（`window` = 该记录由临时准入窗口
+  引入，ADR-8 的窗口重入判据）与**操作者**（`admin` / `system` / 调用方自定义）。工具参数 `by`
+  经 `_by()` 校验：空串归一为 `admin`，**拒绝等于 `window` 的值**，且校验失败不落库。
+- **原因**：`window` 是窗口重入的**唯一判据**（`policy.decide` 只看 `granted_by`）。而 `by` 是
+  外部（含 LLM agent 的幻觉/拼错参数）可直接指定的。实测过这条链：
+  `grant("feishu","ou_x", days=-1, by="window")` 会写入 `granted_by='window'`，此后**每一次**
+  窗口重开都会把他当作「窗口老面孔」自动放行并顺延到期 —— 等于无限自动续期。`by` 因此是
+  **决策输入**，不是纯注释字段。
+- **未做**：不新增 `source` 列把两个概念拆开（需 schema 迁移 + `db.lookup` 元组 3->4 列，波及
+  全部读路径与测试）。当前用「保留字校验 + 文档说明」控制风险；若日后 `by` 还需要承载更多
+  来源语义，再拆列。
+- **备注**：`open_window` 的 `by` 落在 `admit_window.created_by` 列、**不参与任何判定**，故不校验。
+
+## ADR-16 数据不可得时，白名单先于 `fail_open` 生效
+
+- **决策**：`policy.decide` 的 `unavailable` 分支内，先判 `identity in allowlist` 则放行
+  （reason `allowlist`），否则才按 `ADMIT_FAIL_OPEN` 决定方向。
+- **原因**：`ADMIT_ALLOWED_USERS` 是**纯 env 配置、不依赖 DB**，而「永久白名单」的语义就是
+  「这些人永远该放行」。DB 故障不该让白名单失效 —— 否则一次 DB 抖动会把确定该放行的人也拒掉。
+- **代价**：此刻**无法校验封禁态**，白名单里的已封禁者也会被放行。要绝对安全，应设
+  `ADMIT_FAIL_OPEN=0` **并同时**收紧白名单（两个旋钮都拧紧才有效）。放行时 `gate` 侧必定发告警，
+  使这次降级可见。
+- **注意（不对称，勿误当遗漏）**：同一情形下**窗口不生效** —— 窗口是否开放依赖 DB，数据不可得时
+  无从判断；只有不依赖 DB 的白名单能继续生效。
+- **实现位置**：判定在 `policy.decide`（保持无 IO、可单测），告警在 `gate.gate()`（`policy` 不碰
+  IO，且放 `gate` 处使所有框架接入层都受益，不止 Hermes）。
+- **护栏**：白名单的优先**只能**存在于 `unavailable` 分支内。若把它提到函数最前，`banned` 铁律
+  （ADR-2）与 `allowlist_overrides_expired` 语义会一起被破 —— 已用
+  `test_unavailable_allowlist_does_not_leak_into_normal_path` 一次性锁死三个正常路径的判词。
 
 ## 已核对：Hermes 插件 / MCP 配置 API（对照真实源码）
 

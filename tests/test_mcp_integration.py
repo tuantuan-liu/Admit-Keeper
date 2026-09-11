@@ -12,6 +12,7 @@ from datetime import datetime, timedelta
 import pytest
 
 import admit_keeper_mcp as mcp  # 顶层模块导入，与运行时一致
+import db
 from db import lookup_plugin, lookup_window_plugin, now_iso
 from policy import decide
 
@@ -193,6 +194,124 @@ def test_remove_deletes_and_denies(db_env):
     record, unavailable = lookup_plugin("feishu", "ou_1")
     assert record is None
     assert unavailable is False
+
+
+def test_remove_missing_record_reports_not_found(db_env):
+    """remove 对无记录身份不得谎报成功（与 unban 口径一致），且不建任何记录。"""
+    assert remove("feishu", "ou_nobody").startswith("NOT_FOUND")
+    assert query("feishu", "ou_nobody").startswith("NOT_FOUND")
+
+
+# ---------------- P0 回归：封禁不得被侧路绕过（ADR-14） ----------------
+
+
+def test_remove_banned_requires_force(db_env):
+    """P0 回归：删除封禁记录等于撤销封禁，必须显式 force —— 否则「先 ban 再 remove」可绕开 force 门槛。"""
+    grant("feishu", "ou_bad", days=7)
+    ban("feishu", "ou_bad", note="滥用")
+    with pytest.raises(ValueError):
+        remove("feishu", "ou_bad")
+    assert query("feishu", "ou_bad").startswith("status=banned")  # 失败不留痕
+    assert _judge("feishu", "ou_bad") == "deny:banned"
+
+
+def test_remove_banned_with_force_works(db_env):
+    grant("feishu", "ou_bad", days=7)
+    ban("feishu", "ou_bad")
+    assert "removed" in remove("feishu", "ou_bad", force=True)
+    assert query("feishu", "ou_bad").startswith("NOT_FOUND")
+
+
+def test_remove_banned_then_open_window_would_readmit_only_with_force(db_env):
+    """P0 回归：这条是「remove 绕过封禁」的完整利用链 ——
+    ban -> remove -> 开窗，身份变回「无记录」而被 window_open 放行。
+    现在默认路径被 force 门槛拦住（窗口不参与该门槛，故这里断言仍为 deny:banned）。"""
+    open_window("feishu", start=_local_iso(-3600), end=_local_iso(3600))
+    ban("feishu", "ou_x", note="滥用")
+    assert _judge("feishu", "ou_x") == "deny:banned"
+    with pytest.raises(ValueError):
+        remove("feishu", "ou_x")
+    assert _judge("feishu", "ou_x") == "deny:banned"  # 窗口仍无法复用被封禁者
+
+
+def test_grant_rejects_reserved_window_marker_in_by(db_env):
+    """P0 回归：by 是决策输入 —— 传保留字 'window' 会伪造「窗口老面孔」，
+    此后每次窗口重开都被自动放行并顺延（无限自动续期）。必须拦下且不落库。"""
+    with pytest.raises(ValueError):
+        grant("feishu", "ou_forge", days=-1, by="window")
+    assert query("feishu", "ou_forge").startswith("NOT_FOUND")
+    record, _ = lookup_plugin("feishu", "ou_forge")
+    assert record is None
+
+
+def test_grant_normalizes_blank_by(db_env):
+    """by 空串归一为 admin（与 _platform/_identity 的宽松风格一致）。"""
+    assert "by=admin" in grant("feishu", "ou_a", days=1, by="   ")
+
+
+def test_grant_on_banned_raises_without_force(db_env):
+    """P0 回归（ADR-13）：grant 不得静默撤销封禁 —— 否则「先 ban 再 grant」可一步解封+授权，
+    与 remove 的同类侧路一致。默认拒绝，且失败不留痕。"""
+    grant("feishu", "ou_x", days=-1)
+    ban("feishu", "ou_x", note="滥用")
+    with pytest.raises(ValueError):
+        grant("feishu", "ou_x", days=7)
+    assert query("feishu", "ou_x").startswith("status=banned")  # 期限与封禁态均未被改动
+    assert _judge("feishu", "ou_x") == "deny:banned"
+
+
+def test_grant_on_banned_with_force_unbans(db_env):
+    """force=True 才允许「一步解封并授权」。"""
+    ban("feishu", "ou_x", note="滥用")
+    assert "granted" in grant("feishu", "ou_x", days=7, force=True)
+    assert query("feishu", "ou_x").startswith("status=active")
+    assert _judge("feishu", "ou_x") == "active"
+
+
+def test_grant_force_false_does_not_block_normal_paths(db_env):
+    """守卫不得误伤：全新身份、以及本就 active 的记录，force=False 都应照常成功。"""
+    assert "granted" in grant("feishu", "ou_new", days=7)  # 无记录 -> INSERT
+    grant("feishu", "ou_a", days=7)
+    assert "granted" in grant("feishu", "ou_a", days=7)  # 已 active -> 正常续期
+    assert "granted" in grant("feishu", "ou_n2", days=7, force=True)  # 无记录 + force 也无害
+
+
+def test_remove_guard_leaves_banned_record_intact(db_env):
+    """remove 的守卫写成**单条条件化 DELETE**（而非先 SELECT 再 DELETE），
+    故不存在「检查后、删除前被 ban 插入」的竞态窗口。此处锁死可观测契约：被封禁者不被删除。"""
+    ban("feishu", "ou_b", note="滥用")
+    with pytest.raises(ValueError):
+        remove("feishu", "ou_b")
+    assert query("feishu", "ou_b").startswith("status=banned")
+    assert _judge("feishu", "ou_b") == "deny:banned"
+    assert "removed" in remove("feishu", "ou_b", force=True)  # force 才删
+    assert query("feishu", "ou_b").startswith("NOT_FOUND")
+
+
+def test_extend_rejects_unknown_status(db_env):
+    """P0 回归：policy 对未知 status 明确 fail-closed（deny:unknown_status），
+    extend 若把它改写成 active 就等于绕过那层防御（ADR-3：续期不改状态）。"""
+    con = db.open_init()
+    try:
+        con.execute(
+            "INSERT INTO admit_allowed(platform,identity,status,expires_at,granted_by,created_at,updated_at) "
+            "VALUES('feishu','ou_susp','suspended','2000-01-01T00:00:00Z','admin',?,?)",
+            (now_iso(), now_iso()),
+        )
+        con.commit()
+    finally:
+        con.close()
+    assert _judge("feishu", "ou_susp") == "deny:unknown_status"
+    with pytest.raises(ValueError):
+        extend("feishu", "ou_susp", 3)
+    assert "status=suspended" in query("feishu", "ou_susp")  # 未被改写
+
+
+def test_extend_negative_days_raises(db_env):
+    """补覆盖缺口：extend 的 days<0 守卫此前无测试（grant 则故意允许负值造过期记录）。"""
+    grant("feishu", "ou_1", days=7)
+    with pytest.raises(ValueError):
+        extend("feishu", "ou_1", -1)
 
 
 # ---------------- 临时准入窗口（open_window / close_window / list_windows） ----------------

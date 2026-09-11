@@ -100,6 +100,18 @@ def test_explicit_db_arg(feishu_env):
     assert gate.is_allowed("feishu", "u_ok", database=feishu_env) is True
 
 
+def test_unavailable_with_allowlist_allows_and_warns(monkeypatch, tmp_path, caplog):
+    """ADR-16：DB 不存在（数据不可得）+ fail-closed 时，白名单身份仍放行，且**必须告警** ——
+    此刻无法校验封禁态，放行是降级行为，绝不能静默。"""
+    monkeypatch.setenv("ADMIT_KEEPER_DB", str(tmp_path / "nope.db"))
+    monkeypatch.setenv("ADMIT_GATE_PLATFORMS", "feishu")
+    monkeypatch.setenv("ADMIT_FAIL_OPEN", "0")
+    with caplog.at_level(logging.WARNING, logger="admit-keeper"):
+        d = gate.gate("feishu", "u_perm", allowlist={"u_perm"})
+    assert d.is_allow() and d.reason == "allowlist"
+    assert any("无法校验封禁态" in r.getMessage() and "u_perm" in r.getMessage() for r in caplog.records)
+
+
 # ---- 重构后的 Hermes 接入层：委托共享 gate，仅做协议映射 ----
 
 
