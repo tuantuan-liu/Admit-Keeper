@@ -50,6 +50,8 @@ def decide(
                  该方向由 fail_open 决定（默认放行，安全模式改拒绝）。
     allowlist: 永久白名单（env ADMIT_ALLOWED_USERS）。优先级：
                banned（最高）> 过期 > 无记录；白名单覆盖“过期”，但不覆盖 banned。
+               **数据不可得时白名单先于 fail_open 生效**（见 ADR-16）：它是纯 env 配置、
+               不依赖 DB，故 DB 故障时依然放行；代价是此刻无法校验封禁态。
     window_open: 当前有临时准入窗口开放（见 ADR-8）。**仅** 对“无记录”的全新身份放行
                  （reason ``window_open``），不覆盖 banned、也不放行“已过期”者。
     window_reentry: 该记录由**上一次窗口**引入（granted_by == 'window'），且当前又有窗口开放。
@@ -62,6 +64,12 @@ def decide(
     """
     if unavailable:
         # 数据不可得：无法判定 -> 由 fail_open 决定。放行时务必大声告警，避免静默失效。
+        # 白名单例外（ADR-16）：它是纯 env 配置、不依赖 DB，故此刻依然生效，且先于 fail_open。
+        # 代价：此刻无法校验封禁态，白名单内的**已封禁者**也会被放行 —— 与 fail_open 同源的
+        # 取舍（要绝对安全请设 ADMIT_FAIL_OPEN=0 并同时收紧白名单）。告警由 gate 侧发出。
+        # 注意此处**只**认白名单，不认窗口：窗口依赖 DB，数据不可得时无从判断是否开放。
+        if identity in allowlist:
+            return Decision(ALLOW, "allowlist")
         return Decision(ALLOW if fail_open else SKIP, "fail_open" if fail_open else "deny:gate_unavailable")
 
     if record is None:

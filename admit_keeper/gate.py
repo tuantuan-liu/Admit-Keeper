@@ -90,6 +90,8 @@ def gate(
       对**由上一次窗口引入**（``granted_by == 'window'``）且已过期的记录，窗口重开时可再进
       （``window_reentry``），到期顺延到新窗口结束 —— 使「每晚定点开放体验」可复用；
       付费 / 手工授权的过期记录**不**受此影响。
+    - 数据不可得（DB 缺失 / 异常）时：``allowlist`` 内的身份**先于** ``fail_open`` 生效
+      （它是纯 env 配置、不依赖 DB），放行时**必定告警** —— 此刻无法校验封禁态（ADR-16）。
 
     ``allowlist`` / ``fail_open_flag`` / ``database`` 均可不传：未传则分别从环境变量
     （``ADMIT_ALLOWED_USERS`` / ``ADMIT_FAIL_OPEN``）与默认库路径取。
@@ -138,6 +140,12 @@ def gate(
         window_open=window_open,
         window_reentry=window_reentry,
     )
+
+    if unavailable and d.reason == "allowlist":
+        # 数据不可得却按白名单放行：闸门此刻处于**降级**状态（无法校验封禁态），必须告警 ——
+        # 否则「白名单里的已封禁者被放行」这件事完全不可见（ADR-16）。放在 gate 而非 policy：
+        # policy 保持无 IO，且这一处告警对所有框架接入层都生效，不止 Hermes。
+        warn(f"admit-keeper 数据不可得，白名单 {identity} 放行（无法校验封禁态），平台 {platform}")
 
     if window_end is not None and d.reason in ("window_open", "window_reentry"):
         # 落库留痕：到期=窗口结束，供审计与后续自动过期（window_reentry 即把到期顺延到新窗口）。

@@ -22,7 +22,7 @@ for _cand in (_HERE, os.path.join(os.path.dirname(_HERE), "admit_keeper")):
         sys.path.insert(0, _cand)
 
 from db import now_iso, open_init, upsert_allowed  # noqa: E402
-from policy import STATUS_ACTIVE, STATUS_BANNED  # noqa: E402
+from policy import GRANTED_BY_WINDOW, STATUS_ACTIVE, STATUS_BANNED  # noqa: E402
 
 try:
     from mcp.server.fastmcp import FastMCP  # noqa: E402
@@ -51,6 +51,25 @@ def _identity(value: str) -> str:
     if not value:
         raise ValueError("identity 不能为空")
     return value
+
+
+def _by(value: str) -> str:
+    """校验「操作者」标记：空串归一为 ``admin``，并**拒绝保留字**。
+
+    ``granted_by`` 一列身兼两职 —— 「来源标记」（``window`` = 该记录由临时准入窗口引入）
+    与「操作者」（admin / system / 自定义）。前者是窗口重入的**唯一判据**（policy.decide），
+    若允许调用方把 by 传成 ``window``，等于凭空伪造出「窗口老面孔」：此后**每次**窗口重开
+    都会把他重新放行并把到期顺延（见 ADR-15）。故保留字在此拦下，绝不落库。
+    """
+    v = (value or "").strip()
+    if not v:
+        return "admin"
+    if v == GRANTED_BY_WINDOW:
+        raise ValueError(
+            f"by 不能为保留字 {GRANTED_BY_WINDOW!r}：它表示「该记录由临时准入窗口引入」，"
+            "是窗口重入的唯一判据，不接受外部指定"
+        )
+    return v
 
 
 # ---- 临时准入窗口（admit_window）时间解析 ----
@@ -134,9 +153,12 @@ def _upsert(
 
 @mcp.tool()
 def grant(platform: str, identity: str, days: Optional[float] = None, by: str = "admin", note: str = "") -> str:
-    """授权/续期身份为 active。days 为空=永久授权。platform: feishu/wecom/telegram/任意。"""
+    """授权/续期身份为 active。days 为空=永久授权。platform: feishu/wecom/telegram/任意。
+
+    by 为操作者标记（空串归一为 admin）；**不接受保留字 `window`**（见 ADR-15）。"""
     platform = _platform(platform)
     identity = _identity(identity)
+    by = _by(by)
     expires_at = _iso(days) if days is not None else None
     con = open_init()
     try:
@@ -216,7 +238,8 @@ def extend(platform: str, identity: str, days: float) -> str:
     基准 = max(现在, 原到期)：尚未到期 -> 在原到期上顺延（不吞掉剩余时间）；
     已过期 -> 从**现在**起算（否则新到期仍落在过去，工具报成功但用户仍被拒 —— 见 ADR-10）。
     返回值会回显所用基准与是否立即生效。
-    b>注意：对 banned 身份不生效，需先 unban。</b>"""
+    对**非 active** 的记录（banned / 未知 status）一律报错，不代改状态：续期是「时间维度」
+    操作，不应顺带改变更重的「封禁态」或修复未知态（ADR-3）。banned 请先 unban。"""
     platform = _platform(platform)
     identity = _identity(identity)
     if days < 0:
@@ -227,8 +250,13 @@ def extend(platform: str, identity: str, days: float) -> str:
         row = con.execute(
             "SELECT status, expires_at FROM admit_allowed WHERE platform=? AND identity=?", (platform, identity)
         ).fetchone()
-        if row and row["status"] == STATUS_BANNED:
-            raise ValueError(f"{platform}:{identity} 当前为 banned，请先 unban 再续期")
+        if row and row["status"] != STATUS_ACTIVE:
+            # 只拦 banned 是不够的：未知 status（policy 侧 fail-closed 判 deny:unknown_status）
+            # 若被续期改写成 active，等于绕过那层防御（ADR-3：续期不改状态）。
+            raise ValueError(
+                f"{platform}:{identity} 当前为 {row['status']}，非 active，拒绝续期"
+                "（banned 请先 unban；其它状态请显式 grant 覆盖）"
+            )
 
         now_dt = datetime.now(timezone.utc)
         base, base_desc = now_dt, "现在"
@@ -320,16 +348,31 @@ def list_all(platform: Optional[str] = None) -> str:
 
 
 @mcp.tool()
-def remove(platform: str, identity: str) -> str:
-    """彻底删除一条记录。删除后若无白名单兜底，将被拒收。"""
+def remove(platform: str, identity: str, force: bool = False) -> str:
+    """彻底删除一条记录。删除后该身份改按「无记录」重新判定：可能被白名单**或开放窗口**放行。
+
+    对 status='banned' 的记录**默认拒绝** —— 删除封禁记录等于撤销封禁，且会让封禁从
+    get_expired 里消失、审计断层。确需删除请显式传 force=True（见 ADR-14）；
+    只是想恢复访问请改用 unban（它会保留记录与期限）。
+    无记录时返回 NOT_FOUND，**不谎报成功**（与 unban 口径一致）。"""
     platform = _platform(platform)
     identity = _identity(identity)
     con = open_init()
     try:
-        con.execute("DELETE FROM admit_allowed WHERE platform=? AND identity=?", (platform, identity))
+        row = con.execute(
+            "SELECT status FROM admit_allowed WHERE platform=? AND identity=?", (platform, identity)
+        ).fetchone()
+        if row is not None and row["status"] == STATUS_BANNED and not force:
+            raise ValueError(
+                f"{platform}:{identity} 当前为 banned，删除封禁记录等于撤销封禁；"
+                "确需删除请传 force=True，或改用 unban 保留记录与期限"
+            )
+        n = con.execute("DELETE FROM admit_allowed WHERE platform=? AND identity=?", (platform, identity)).rowcount
         con.commit()
     finally:
         con.close()
+    if n == 0:
+        return f"NOT_FOUND {platform}:{identity} 无记录（未删除任何数据）"
     return f"removed {platform}:{identity}"
 
 
