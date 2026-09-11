@@ -1,6 +1,7 @@
 """pytest 夹具：把仓库根、admit_keeper/ 与 mcp/ 目录加到 sys.path，使测试既可像运行时插件/MCP
 一样以顶层模块方式导入（`from policy import decide`、`import admit_keeper_mcp`），也能以包方式
 导入框架无关共享实现（`from admit_keeper.gate import gate`）。"""
+
 import os
 import sys
 

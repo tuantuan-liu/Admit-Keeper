@@ -1,4 +1,7 @@
-"""db 数据层单测：建表、写入、唯一键去重、lookup / lookup_plugin 的 unavailable 分支。"""
+"""db 数据层单测：建表、写入、唯一键去重、lookup / lookup_plugin 的 unavailable 分支，
+以及数据库后端抽象（默认 SQLite / 可按环境变量选择 / 未知后端报错）。"""
+
+import pytest
 
 import db
 
@@ -85,21 +88,20 @@ def test_lookup_plugin_matches(tmp_path, monkeypatch):
 
 # ---------------- 旧库兼容：表缺 granted_by 列 ----------------
 
+
 def test_lookup_on_legacy_table_without_granted_by(tmp_path, monkeypatch):
-    """旧库 admit_allowed 缺 granted_by 列 → 读路径降级为 (status, expires_at, None)。
+    """旧库 admit_allowed 缺 granted_by 列 -> 读路径降级为 (status, expires_at, None)。
 
     若直接 SELECT granted_by 会抛 `no such column`，被 lookup_plugin 的
-    `except sqlite3.Error` 吃成 unavailable → 整条准入滑进 fail-open / fail-closed
+    `except sqlite3.Error` 吃成 unavailable -> 整条准入滑进 fail-open / fail-closed
     （ADR-1 最坏情形）。故读路径必须降级而不是失败。
     """
     f = tmp_path / "legacy.db"
     con = db.connect(str(f))
     con.execute(
-        "CREATE TABLE admit_allowed(id INTEGER PRIMARY KEY, platform TEXT, identity TEXT, "
-        "status TEXT, expires_at TEXT)"
+        "CREATE TABLE admit_allowed(id INTEGER PRIMARY KEY, platform TEXT, identity TEXT, status TEXT, expires_at TEXT)"
     )
-    con.execute("INSERT INTO admit_allowed(platform,identity,status,expires_at) "
-                "VALUES('feishu','ou_1','active',NULL)")
+    con.execute("INSERT INTO admit_allowed(platform,identity,status,expires_at) VALUES('feishu','ou_1','active',NULL)")
     con.commit()
     con.close()
 
@@ -115,8 +117,7 @@ def test_ensure_schema_migrates_legacy_table(tmp_path):
     f = tmp_path / "legacy.db"
     con = db.connect(str(f))
     con.execute(
-        "CREATE TABLE admit_allowed(id INTEGER PRIMARY KEY, platform TEXT, identity TEXT, "
-        "status TEXT, expires_at TEXT)"
+        "CREATE TABLE admit_allowed(id INTEGER PRIMARY KEY, platform TEXT, identity TEXT, status TEXT, expires_at TEXT)"
     )
     con.execute("INSERT INTO admit_allowed(platform,identity,status) VALUES('feishu','ou_1','active')")
     con.commit()
@@ -132,3 +133,48 @@ def test_ensure_schema_migrates_legacy_table(tmp_path):
     finally:
         con.close()
     assert rec == ("active", None, None)  # 旧行补成 NULL = 非窗口引入（安全默认）
+
+
+# ---- 数据库后端抽象：默认 SQLite，可按 ADMIT_DB_BACKEND 选择 ----
+
+
+def test_default_backend_is_sqlite():
+    assert db.get_backend().name == "sqlite"
+
+
+def test_backend_placeholder_is_question_mark():
+    # SQLite 用 '?' 占位符；换 MySQL 后端应暴露 '%s'，调用方无需改。
+    assert db.SQLiteBackend.placeholder == "?"
+
+
+def test_backend_selectable_by_env(monkeypatch):
+    monkeypatch.setenv("ADMIT_DB_BACKEND", "sqlite")
+    assert db.get_backend().name == "sqlite"
+
+
+def test_unknown_backend_raises(monkeypatch):
+    monkeypatch.setenv("ADMIT_DB_BACKEND", "nope")
+    with pytest.raises(ValueError):
+        db.get_backend()
+    # 显式指定仍可拿到内置后端
+    assert db.get_backend("sqlite").name == "sqlite"
+
+
+def test_upsert_allowed_via_backend_roundtrip(tmp_path):
+    """经后端 upsert_allowed 写入，再由 lookup 读回 —— 验证抽象层端到端可用。"""
+    con = db.open_init(str(tmp_path / "a.db"))
+    try:
+        db.upsert_allowed(
+            con,
+            "feishu",
+            "ou_1",
+            status="active",
+            granted_at=db.now_iso(),
+            expires_at=None,
+            granted_by="admin",
+            note="",
+        )
+        con.commit()
+        assert db.lookup(con, "feishu", "ou_1") == ("active", None, "admin")
+    finally:
+        con.close()

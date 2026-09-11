@@ -17,6 +17,7 @@ Hermes 接入层（``__init__.py`` 的 ``_on_pre_gateway_dispatch``）与任何�
     if not d.is_allow():
         log(d.reason)
 """
+
 from __future__ import annotations
 
 import os
@@ -28,13 +29,30 @@ from .db import lookup_plugin, now_iso
 from .policy import Decision
 
 
-def _warn(msg: str) -> None:
+def warn(msg: str) -> None:
+    """告警输出：优先 loguru（可选依赖），未装则回退标准库 logging，最后 stderr；绝不外抛。
+
+    准入层跑在网关进程热路径、刻意保持「零必需依赖」，故 loguru 设计为**可选**
+    （见 pyproject 的 ``[log]`` extra）：装了走 loguru，没装回退 stdlib，均不影响判定。
+    """
+    try:
+        from loguru import logger
+
+        logger.bind(component="admit-keeper").warning(msg)
+        return
+    except Exception:  # loguru 未安装 / 异常 -> 回退标准库
+        pass
     try:
         import logging
 
         logging.getLogger("admit-keeper").warning(msg)
-    except Exception:
-        pass
+    except Exception:  # 日志失败不抛给调用方
+        try:
+            import sys
+
+            print(f"[admit-keeper] {msg}", file=sys.stderr)
+        except Exception:
+            pass
 
 
 def managed_platforms() -> Set[str]:
@@ -54,14 +72,18 @@ def fail_open() -> bool:
     return policy.parse_bool(os.environ.get("ADMIT_FAIL_OPEN"), default=True)
 
 
-def gate(platform: Optional[str], identity: Optional[str], *,
-         allowlist: Optional[Set[str]] = None,
-         fail_open_flag: Optional[bool] = None,
-         database: Optional[str] = None) -> Decision:
+def gate(
+    platform: Optional[str],
+    identity: Optional[str],
+    *,
+    allowlist: Optional[Set[str]] = None,
+    fail_open_flag: Optional[bool] = None,
+    database: Optional[str] = None,
+) -> Decision:
     """判定 ``(platform, identity)`` 是否有资格进入，返回一个 ``Decision``。
 
-    - platform 为空 / 非受管 → 放行（``Decision(ALLOW, 'unmanaged_platform')``）
-    - identity 为空 → 放行（无法判定谁进来，不误拦）
+    - platform 为空 / 非受管 -> 放行（``Decision(ALLOW, 'unmanaged_platform')``）
+    - identity 为空 -> 放行（无法判定谁进来，不误拦）
     - 否则 ``lookup_plugin`` + ``policy.decide``（banned > 过期 > 无记录 > 白名单）
     - 若存在开放的临时准入窗口（``admit_window``），放行**全新**（无记录）身份，
       并落一条 ``expires_at = 窗口结束`` 的记录；banned 不受窗口影响（见 ADR-8）。
@@ -88,7 +110,7 @@ def gate(platform: Optional[str], identity: Optional[str], *,
     record, unavailable = lookup_plugin(platform, identity, db=database)
 
     # 窗口只可能在两种情形影响判定，且都属「非热路径」，故仅此时多查一次窗口（保持常见路径单查询）：
-    #   ① 全新身份（无记录）→ window_open；② 由**上一次窗口**引入、现已过期的记录 → window_reentry。
+    #   ① 全新身份（无记录）-> window_open；② 由**上一次窗口**引入、现已过期的记录 -> window_reentry。
     # 其余（banned / 有效 active / 付费等手工授权的过期记录）不查。
     window_end: Optional[str] = None
     if not unavailable:
@@ -107,9 +129,14 @@ def gate(platform: Optional[str], identity: Optional[str], *,
     window_reentry = window_open and record is not None and record[2] == policy.GRANTED_BY_WINDOW
 
     d = policy.decide(
-        identity=identity, record=record, allowlist=allow,
-        now=now, fail_open=fo, unavailable=unavailable,
-        window_open=window_open, window_reentry=window_reentry,
+        identity=identity,
+        record=record,
+        allowlist=allow,
+        now=now,
+        fail_open=fo,
+        unavailable=unavailable,
+        window_open=window_open,
+        window_reentry=window_reentry,
     )
 
     if window_end is not None and d.reason in ("window_open", "window_reentry"):
@@ -118,7 +145,7 @@ def gate(platform: Optional[str], identity: Optional[str], *,
         try:
             db.grant_window_entry(platform, identity, window_end, db=database)
         except Exception as exc:  # noqa: BLE001
-            _warn(f"admit-keeper 窗口进入落库失败（不影响放行）: {exc!r}")
+            warn(f"admit-keeper 窗口进入落库失败（不影响放行）: {exc!r}")
 
     return d
 

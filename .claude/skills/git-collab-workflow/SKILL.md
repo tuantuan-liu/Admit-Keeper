@@ -11,7 +11,7 @@ metadata:
 
 # Git 协作流程 Skill
 
-标准化的 Git 协作工作流：分支 → 修改 → 检查 → 提交 → 推送 → PR → 清理。
+标准化的 Git 协作工作流：分支 -> 修改 -> 检查 -> 提交 -> 推送 -> PR -> 清理。
 
 ## 触发条件
 
@@ -168,10 +168,10 @@ cat .gitignore 2>/dev/null || echo "(no .gitignore found)"
 ```
 
 **发现异常时的处理**：
-- **敏感文件**（.env、.pem、密钥等）→ 立即从 git 中移除：`git rm --cached <file>`，并添加到 `.gitignore`
-- **构建产物**（node_modules、__pycache__、dist 等）→ 添加到 `.gitignore`
-- **大文件**（>1MB）→ 提醒用户确认是否应该提交，考虑用 Git LFS
-- **无 .gitignore** → 根据项目类型生成基础 `.gitignore`（Python / Node.js / 混合项目模板）
+- **敏感文件**（.env、.pem、密钥等）-> 立即从 git 中移除：`git rm --cached <file>`，并添加到 `.gitignore`
+- **构建产物**（node_modules、__pycache__、dist 等）-> 添加到 `.gitignore`
+- **大文件**（>1MB）-> 提醒用户确认是否应该提交，考虑用 Git LFS
+- **无 .gitignore** -> 根据项目类型生成基础 `.gitignore`（Python / Node.js / 混合项目模板）
 
 **常见需要忽略的文件（按项目类型）**：
 
@@ -299,7 +299,7 @@ mcp__github__create_pull_request(
 
 ---
 Created by **<AGENT_NAME>**
-"""
+""",
 )
 ```
 
@@ -364,7 +364,7 @@ GitHub: https://github.com/<owner>/<repo>/compare/main...<branch>
 ```
 Git 协作流程完成
 
-分支: feat/xxx → main
+分支: feat/xxx -> main
 提交: feat(scope): description
 推送: 已推送到远程
 PR: <PR链接或手动创建指引>

@@ -6,7 +6,7 @@
 ## ADR-1 数据不可得时默认 fail-open（可切 fail-closed）
 
 - **决策**：`ADMIT_FAIL_OPEN` 默认 `1`（放行）。DB 缺失 / 读取异常 / 表未建时，
-  无法判定身份 → 放行并高声告警，方向与"无插件时一致"。
+  无法判定身份 -> 放行并高声告警，方向与"无插件时一致"。
 - **原因**：插件在网关热路径上，瞬时 DB 锁或首启未建表若导致全量拒绝，等于整网关
   DoS。放行 + 告警比静默丢消息对可用性更友好。
 - **代价**：DB 故障瞬间，**已封禁者可能漏放**。若要安全性优先，
@@ -18,13 +18,13 @@
 
 `policy.decide()` 顺序：
 
-1. `unavailable`（数据不可得）→ 由 `ADMIT_FAIL_OPEN` 决定
-2. `banned` → 拒绝（即便在永久白名单、即便由窗口引入）——封禁是最高权限
-3. `status != active`（未知 status，防御）→ 拒绝
-4. `expired` → 拒绝，**但** 若在 `ADMIT_ALLOWED_USERS` 白名单 → `allowlist_overrides_expired`；
-   若 `granted_by='window'` 且当前有窗口开放 → `window_reentry`（见 ADR-8）
-5. `active` 且未过期 → 放行
-6. 无记录 → 白名单放行 / 窗口开放则 `window_open` 放行 / 否则拒绝（deny-by-default）
+1. `unavailable`（数据不可得）-> 由 `ADMIT_FAIL_OPEN` 决定
+2. `banned` -> 拒绝（即便在永久白名单、即便由窗口引入）——封禁是最高权限
+3. `status != active`（未知 status，防御）-> 拒绝
+4. `expired` -> 拒绝，**但** 若在 `ADMIT_ALLOWED_USERS` 白名单 -> `allowlist_overrides_expired`；
+   若 `granted_by='window'` 且当前有窗口开放 -> `window_reentry`（见 ADR-8）
+5. `active` 且未过期 -> 放行
+6. 无记录 -> 白名单放行 / 窗口开放则 `window_open` 放行 / 否则拒绝（deny-by-default）
 
 **白名单只覆盖"过期"，不覆盖"banned"**：永久白名单不会意外复活被封禁者。
 **窗口重入同理只覆盖"窗口引入的过期"**，不覆盖 `banned`、也不覆盖付费/手工授权的过期。
@@ -58,7 +58,7 @@
   本组件 `mcp/admit_keeper_mcp.py` 基于 v1 `FastMCP`，因此在 `install.sh`、
   `pyproject`（`mcp[cli]>=1.0,<2`）统一**钉 `<2`**，避免装到 2.x 后 `FastMCP` import 崩溃。
 - 若日后要升级到 mcp 2.x，需把 `FastMCP` 迁移到 `MCPServer`（API 多处变动），届时再单独处理。
-- 测试用 uv：`uv sync`（装 `mcp[cli]<2` + `pytest`）+ `uv run pytest`（118 项）。
+- 测试用 uv：`uv sync`（装 `mcp[cli]<2` + `pytest`）+ `uv run pytest`（125 项）。
 
 ## ADR-8 临时准入窗口：放行「无记录」新身份 + 重开时重新纳入「窗口引入」的老面孔
 
@@ -99,8 +99,8 @@
 - **决策**：`unban` 只把 `status` 由 `banned` 翻回 `active`，**绝不改动 `expires_at`**。
   无 `banned` 记录时返回 `NOT_FOUND` 且**不建任何记录**。
 - **原因**：旧实现 `unban` 走 grant 路径 `SET expires_at=NULL`，等于**永久提权**。最危险的
-  一支：封禁一个**从未有过记录**的人再解封 → 凭空造出 `active + expires=NULL` = 永久授权。
-  另一支：给已过期用户解封 → 把他变成永久。"解封"是"撤销惩罚"，不是"授予权限"。
+  一支：封禁一个**从未有过记录**的人再解封 -> 凭空造出 `active + expires=NULL` = 永久授权。
+  另一支：给已过期用户解封 -> 把他变成永久。"解封"是"撤销惩罚"，不是"授予权限"。
 - **代价**：想把封禁用户真正放进来，需**显式**再 `grant`（或 `extend`）。这是刻意的两步：
   两个决策分开，避免一次误操作同时完成"解封 + 永久授权"。
 - **备注**：解封**永久用户**仍是永久（解封不改变授权维度，只翻封禁态）；回归测试
@@ -111,9 +111,9 @@
 ## ADR-10 extend 以 `max(现在, 原到期)` 为基准
 
 - **决策**：`extend(platform, identity, days)` 的起算基准 = `max(now, 原 expires_at)`：
-  - 记录仍有效（原到期 > 现在）→ 在**原到期**上叠加，不吞掉剩余时间；
-  - 已过期 / 无期限记录 → 从**现在**起算；
-  - 返回串显式回显 `基准=…` 与是否**立即生效**，新到期仍在过去时打 `⚠ 未生效`。
+  - 记录仍有效（原到期 > 现在）-> 在**原到期**上叠加，不吞掉剩余时间；
+  - 已过期 / 无期限记录 -> 从**现在**起算；
+  - 返回串显式回显 `基准=…` 与是否**立即生效**，新到期仍在过去时打 `[警告] 未生效`。
 - **原因**：旧实现一律以旧到期为基准。给**已过期**用户续期时，新到期仍落在过去，
   工具却报"成功"——运营最常用的场景（"这人过期了，再给 7 天"）恰好静默失效，且反馈骗人。
 - **代价**：无。基准规则更符合"续期"直觉，且返回串把基准与生效性摊开，避免再次静默。
@@ -121,25 +121,51 @@
   `test_extend_active_stacks_on_existing_expiry` 锁死。`extend` 遇 `banned` 仍**报错**
   （ADR-3 不变）。
 
+## ADR-11 日志优先 loguru，但保持「可选依赖 + 回退」
+
+- **决策**：统一告警出口 `gate.warn()` **优先 loguru**；未安装则回退标准库 `logging`，最后退
+  stderr。loguru 列为**可选** extra（`pyproject` 的 `[log]`，`pip install -e ".[log]"` 启用），
+  **不进必需依赖**。
+- **原因**：CLAUDE.md 要求日志优先 loguru；但准入层跑在网关进程热路径内、刻意保持「零必需依赖」
+  （见 ADR-1 / db.py 顶部说明）。把 loguru 设为可选，既可满足「优先 loguru」，又不会因网关环境
+  没装 loguru 而 import 崩溃。回退链保证任何环境下告警都不丢、且 `warn()` 绝不外抛。
+- **代价**：装了 loguru 时告警只进 loguru sink（不再进标准库 logging）；两者并存会产生重复，
+  故只走一条。测试环境不装 loguru，走标准库回退，`caplog` 可直接断言。
+
+## ADR-12 数据库后端抽象：`Backend` 接口 + SQLite 默认，为 MySQL 留接入点
+
+- **决策**：`db.py` 内定义 `Backend` 抽象（连接 `connect`、建表迁移 `ensure_schema`、异常类型
+  `error`、参数占位符 `placeholder`、UPSERT `upsert_allowed`），内置 `SQLiteBackend` 为默认；
+  用 `ADMIT_DB_BACKEND` 选择后端。MCP 的 grant/extend 与窗口落库都改走 `db.upsert_allowed()`，
+  UPSERT 语法不再散落。
+- **原因**：CLAUDE.md 要求「数据库连接与操作代码不要写死，后续可能适配 MySQL」。把随引擎而异的
+  部分收敛到一个接口，将来实现 `MySQLBackend` + `register_backend()` 即可，调用方（gate / mcp）
+  无需改动。
+- **为何后端抽象**就地**放 `db.py` 而非拆成兄弟模块**：`db.py` 被两种方式导入 —— 插件包内
+  `admit_keeper.db` 与 MCP/脚本顶层 `db`；一旦出现包内相对导入，顶层导入即 ImportError（同类坑
+  见本文件 ADR-8）。留在同模块内，两种导入都成立。
+- **未做**：不内置 MySQL 实现（无驱动、无法验证），仅留接口与文档；MCP 侧另有若干简单
+  SELECT/UPDATE 仍用 `?` 占位符，适配 MySQL 时需改为后端占位符 —— 已在该处注释标注。
+
 ## 已核对：Hermes 插件 / MCP 配置 API（对照真实源码）
 
 以下假设均已对照本机安装的 Hermes 源码核实（`envs/hermes/Lib/site-packages/`）：
 
 | 假设 | 结论 | 依据 |
 |---|---|---|
-| `kind: standalone` | ✅ 合法 | `hermes_cli/plugins.py` `_VALID_PLUGIN_KINDS` |
-| 插件目录 `~/.hermes/plugins/<name>/` 含 `plugin.yaml`+`__init__.py` | ✅ 用户插件目录 | 同上 `get_bundled_plugins_dir`/发现逻辑 |
-| `plugin.yaml` 字段 `name/kind/version/description` | ✅ `kind` 缺省即 standalone | `_parse_manifest` |
-| `register(ctx)`（`ctx=PluginContext`） | ✅ | `_load_plugin` |
-| `ctx.register_hook("pre_gateway_dispatch", cb)` | ✅ 合法钩子 | `VALID_HOOKS` |
-| 回调以关键字 `event/gateway/session_store` 调用 | ✅ | `PluginManager.invoke_hook`→`cb(**kwargs)` |
-| 返回 `None`/`{"action":"allow"}`→放行；`{"action":"skip","reason"}`→丢弃 | ✅ | `gateway/run.py` `_handle_message` |
-| 钩子触发点位于应用内鉴权之前 | ✅（比方案文档"平台白名单之后"更靠前） | `gateway/run.py` `_handle_message` |
-| 顶层 `mcp_servers:` key + `command/args/env`(stdio) | ✅ | `tools/mcp_tool.py` `MCPServerTask` stdio 分支 |
-| `plugins.enabled` 门控 | ✅ | `hermes_cli/plugins.py` |
-| **MCP 子进程 env 被过滤**：只透传 `PATH/HOME/USER/LANG/LC_ALL/TERM/SHELL/TMPDIR`+`XDG_*`+`mcp_servers.<name>.env` 显式写的变量 | ✅ | `tools/mcp_tool.py` `_build_safe_env()`（`ADMIT_KEEPER_DB` 须在 `env:` 里显式给出） |
-| **Hermes env(运行 gateway 的 python)本身没装 `mcp` 包** | ✅ | `envs/hermes/Lib/site-packages/` 无 `mcp`/`mcp*.dist-info`（有 hermes_cli/acp_adapter/anyio/httpx） |
-| 插件判库在否用 `os.path.exists()`，不展开 `~` | ✅ | `admit_keeper/db.py` `lookup_plugin`（`ADMIT_KEEPER_DB` 用绝对路径，别用 `~`，否则误判库不存在→fail-open 全放行） |
+| `kind: standalone` | [是] 合法 | `hermes_cli/plugins.py` `_VALID_PLUGIN_KINDS` |
+| 插件目录 `~/.hermes/plugins/<name>/` 含 `plugin.yaml`+`__init__.py` | [是] 用户插件目录 | 同上 `get_bundled_plugins_dir`/发现逻辑 |
+| `plugin.yaml` 字段 `name/kind/version/description` | [是] `kind` 缺省即 standalone | `_parse_manifest` |
+| `register(ctx)`（`ctx=PluginContext`） | [是] | `_load_plugin` |
+| `ctx.register_hook("pre_gateway_dispatch", cb)` | [是] 合法钩子 | `VALID_HOOKS` |
+| 回调以关键字 `event/gateway/session_store` 调用 | [是] | `PluginManager.invoke_hook`->`cb(**kwargs)` |
+| 返回 `None`/`{"action":"allow"}`->放行；`{"action":"skip","reason"}`->丢弃 | [是] | `gateway/run.py` `_handle_message` |
+| 钩子触发点位于应用内鉴权之前 | [是]（比方案文档"平台白名单之后"更靠前） | `gateway/run.py` `_handle_message` |
+| 顶层 `mcp_servers:` key + `command/args/env`(stdio) | [是] | `tools/mcp_tool.py` `MCPServerTask` stdio 分支 |
+| `plugins.enabled` 门控 | [是] | `hermes_cli/plugins.py` |
+| **MCP 子进程 env 被过滤**：只透传 `PATH/HOME/USER/LANG/LC_ALL/TERM/SHELL/TMPDIR`+`XDG_*`+`mcp_servers.<name>.env` 显式写的变量 | [是] | `tools/mcp_tool.py` `_build_safe_env()`（`ADMIT_KEEPER_DB` 须在 `env:` 里显式给出） |
+| **Hermes env(运行 gateway 的 python)本身没装 `mcp` 包** | [是] | `envs/hermes/Lib/site-packages/` 无 `mcp`/`mcp*.dist-info`（有 hermes_cli/acp_adapter/anyio/httpx） |
+| 插件判库在否用 `os.path.exists()`，不展开 `~` | [是] | `admit_keeper/db.py` `lookup_plugin`（`ADMIT_KEEPER_DB` 用绝对路径，别用 `~`，否则误判库不存在->fail-open 全放行） |
 
 **推论**：方案 A（`FEISHU_ALLOW_ALL_USERS=true` + 插件当唯一门卫）成立——钩子在
 Hermes 自身鉴权之前、又在平台 adapter 之后，插件确实是准入唯一门卫。

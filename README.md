@@ -13,20 +13,26 @@
 
 内核 + 门卫助手，全部**不含任何框架代码**，任何框架都可直接用：
 
-- `admit_keeper/policy.py` → `decide(identity, record, allowlist, now, fail_open, unavailable, window_open, window_reentry)` —— 纯决策、无 IO、可单测。
-- `admit_keeper/db.py` → `lookup_plugin(platform, identity)` / `db_path()` —— 只读共享名册，与 MCP 解耦。
-- `admit_keeper/gate.py` → `gate(...)` / `is_allowed(...)` —— **框架无关门卫助手**：读环境变量、调 `lookup_plugin` + `decide`，一个函数给出放行/丢弃判定。这就是"换框架只写接入层"的那份共享实现。
+- `admit_keeper/policy.py` -> `decide(identity, record, allowlist, now, fail_open, unavailable, window_open, window_reentry)` —— 纯决策、无 IO、可单测。
+- `admit_keeper/db.py` -> `lookup_plugin(platform, identity)` / `db_path()` —— 只读共享名册，与 MCP 解耦。
+- `admit_keeper/gate.py` -> `gate(...)` / `is_allowed(...)` —— **框架无关门卫助手**：读环境变量、调 `lookup_plugin` + `decide`，一个函数给出放行/丢弃判定。这就是"换框架只写接入层"的那份共享实现。
 - `mcp/admit_keeper_mcp.py` —— 管理层（FastMCP），低频读写同一库。
+
+> **日志**：优先 `loguru`（可选依赖，`pip install -e ".[log]"` 即启用），未装则自动回退标准库
+> `logging` —— 准入层刻意保持「零必需依赖」。**数据库后端**：`db.py` 内置 SQLite，随引擎而异的
+> 连接 / 建表 / 迁移 / UPSERT 收在 `Backend` 接口内；后续实现 `MySQLBackend` + `register_backend()`
+> 并用 `ADMIT_DB_BACKEND` 选择即可适配 MySQL，调用方无需改动。
 
 任何框架的"消息进 agent 前"接线，就是**几行**调 `gate.is_allowed()`（平台/身份/环境变量/白名单/fail-open 全在门卫助手内处理）：
 
 ```python
 from admit_keeper.gate import gate, is_allowed
 
+
 def on_message(event):
     if not is_allowed(event.platform, event.user_id):
-        return drop()          # 框架各自的"丢弃"动作
-    return dispatch(event)     # 否则正常进入 agent
+        return drop()  # 框架各自的"丢弃"动作
+    return dispatch(event)  # 否则正常进入 agent
 ```
 
 > 若想看到**被判**的原因（用于日志/告警），用完整版：
@@ -46,10 +52,10 @@ Hermes 是其中一个**具体接入示例**。下面以"单配置部署"为例�
 
 **1) 复制文件**（插件 + MCP 到 `~/.hermes`）
 ```bash
-bash scripts/install.sh                # 插件→~/.hermes/plugins/admit-keeper/；MCP→~/.hermes/profiles/default/
+bash scripts/install.sh                # 插件->~/.hermes/plugins/admit-keeper/；MCP->~/.hermes/profiles/default/
 ```
 
-> ⚠️ `install.sh` 里那行 `python3 -m pip install -U "mcp[cli]>=1,<2"` 会在 `python3` 对应
+> [注意] `install.sh` 里那行 `python3 -m pip install -U "mcp[cli]>=1,<2"` 会在 `python3` 对应
 > 的环境里装 mcp。**别指望它**——MCP 服务端最好放进独立 venv（见第 2 步），既隔离又不污染
 > gateway 环境。若 `python3` 会装进 gateway 进程用的环境，请直接跳过大可不必。
 
@@ -75,7 +81,7 @@ EOF
 ```
 > 插件不设 `ADMIT_KEEPER_DB` 的原因：让它在网关进程里用 `$HERMES_HOME/admit_keeper.db`
 > 默认值（HERMES_HOME 在网关进程一定存在）。**不要用 `~` 写路径**——插件用
-> `os.path.exists()` 判库在不在，Python 不展开 `~`，会误判库不存在 → fail-open 全部放行，
+> `os.path.exists()` 判库在不在，Python 不展开 `~`，会误判库不存在 -> fail-open 全部放行，
 > 闸门静默失效。MCP 侧的路径见下，取**绝对路径**、并指向与插件同一个文件。
 
 **4) 编辑 `~/.hermes/config.yaml`**，在顶层追加（保留原有键）。命令路径、DB 路径都替换成
@@ -91,7 +97,7 @@ mcp_servers:
     env:
       ADMIT_KEEPER_DB: "C:/Users/你的用户名/.hermes/admit_keeper.db"
 ```
-> `plugins.enabled` 必须是**列表**（顶层 `plugins:` → `enabled:`）；缺省/畸形 = 什么都不启用，
+> `plugins.enabled` 必须是**列表**（顶层 `plugins:` -> `enabled:`）；缺省/畸形 = 什么都不启用，
 > 这就是"装了但没生效"的常见原因。也可用 `hermes plugins enable admit-keeper` 写入。
 > MCP 的 `ADMIT_KEEPER_DB` 要能落到与插件同一个文件：插件用 `$HERMES_HOME/admit_keeper.db`，
 > MCP 子进程里 HERMES_HOME 被过滤掉了，所以此处写死为同等绝对路径。
@@ -117,15 +123,15 @@ tail -f ~/.hermes/logs/gateway.log # 启动后应无 pre_gateway_dispatch 注册
 ## 使用（通过 MCP 工具管理）
 
 ```python
-grant("feishu", "ou_xxx", days=7)     # 开通 7 天
-grant("feishu", "ou_yyy")             # 永久授权
-extend("feishu", "ou_xxx", days=3)    # 续期 3 天（banned 需先 unban）
-ban("feishu", "ou_zzz", note="滥用")   # 立即封禁
-unban("feishu", "ou_zzz")             # 仅解封，保留原期限（≠授权，见 ADR-9）
-get_expired()                         # 列出过期/封禁
-query("feishu", "ou_xxx")             # 查单个状态
-list_all()                            # 全部记录
-remove("feishu", "ou_xxx")            # 删记录（删除后无白名单兜底则拒收）
+grant("feishu", "ou_xxx", days=7)  # 开通 7 天
+grant("feishu", "ou_yyy")  # 永久授权
+extend("feishu", "ou_xxx", days=3)  # 续期 3 天（banned 需先 unban）
+ban("feishu", "ou_zzz", note="滥用")  # 立即封禁
+unban("feishu", "ou_zzz")  # 仅解封，保留原期限（≠授权，见 ADR-9）
+get_expired()  # 列出过期/封禁
+query("feishu", "ou_xxx")  # 查单个状态
+list_all()  # 全部记录
+remove("feishu", "ou_xxx")  # 删记录（删除后无白名单兜底则拒收）
 ```
 
 > **`unban` 只解封、不授权**（[ADR-9](docs/design-decisions.md)）：它只把封禁态翻回 `active`，
@@ -140,15 +146,13 @@ remove("feishu", "ou_xxx")            # 删记录（删除后无白名单兜底�
 `platform` 是**任意平台名**（feishu / wecom / telegram / 你自定义的渠道），或 **`"*"` 通配 = 所有平台一次生效**：
 
 ```python
-open_window("*", start="14:00", end="16:00")               # 全平台，今天本地 14:00–16:00
-open_window("wecom", start="14:00", end="16:00")           # 也可只针对某个平台
-open_window("*", start="2026-09-12T14:00:00",
-                 end="2026-09-12T16:00:00")                # 指定日期（本地时区）
-open_window("*", start="2026-09-12T14:00:00+08:00",
-                 end="2026-09-12T16:00:00+08:00")          # 显式偏移
-list_windows()             # 全部窗口；状态 open（进行中）/ upcoming（未开始）/ closed（已结束）
-close_window("*")          # 关闭通配窗口（开窗时用的什么 platform，关时就用什么）
-close_window("wecom", id=3)    # 按 id 删除（可取消尚未开始的未来窗口）
+open_window("*", start="14:00", end="16:00")  # 全平台，今天本地 14:00–16:00
+open_window("wecom", start="14:00", end="16:00")  # 也可只针对某个平台
+open_window("*", start="2026-09-12T14:00:00", end="2026-09-12T16:00:00")  # 指定日期（本地时区）
+open_window("*", start="2026-09-12T14:00:00+08:00", end="2026-09-12T16:00:00+08:00")  # 显式偏移
+list_windows()  # 全部窗口；状态 open（进行中）/ upcoming（未开始）/ closed（已结束）
+close_window("*")  # 关闭通配窗口（开窗时用的什么 platform，关时就用什么）
+close_window("wecom", id=3)  # 按 id 删除（可取消尚未开始的未来窗口）
 ```
 > 上例用 `feishu`/`wecom` 仅为举例；换成任何渠道同理，代码无需改动。通配窗口与平台专属窗口
 > 可共存，判定时取**更晚**的结束时间。通配窗口对所有平台生效，但某平台须在
@@ -156,7 +160,7 @@ close_window("wecom", id=3)    # 按 id 删除（可取消尚未开始的未来�
 
 **语义**（见 [ADR-8](docs/design-decisions.md)）：
 
-- 窗口 `[start, end)` 内，**从未有过记录的全新身份**发消息 → 放行，并自动落一条
+- 窗口 `[start, end)` 内，**从未有过记录的全新身份**发消息 -> 放行，并自动落一条
   `active`、**到期时间 = 窗口结束**、来源标记 `granted_by='window'` 的记录（可审计、到期自动失效）。
 - **窗口重开 = 重新纳入"窗口引入的"老面孔**：上次从窗口进来的用户，其记录到期时间就是上次窗口的
   结束时刻；**新窗口一开**，他会再次被放行，并把到期顺延到新窗口结束。修「每晚定点开放体验
@@ -164,10 +168,10 @@ close_window("wecom", id=3)    # 按 id 删除（可取消尚未开始的未来�
 - **但只重新纳入窗口引入的**：**付费 / 手工授权**（`granted_by` 非 `window`）的过期用户，
   窗口重开**照旧拒**（`deny:expired`）。窗口是"体验名额"，不顺带复活别人的付费到期。
 - **`banned` 恒拒**：封过的老面孔，窗口重开也绝不复活。
-- 过了 `end`，这些用户自动过期 → 拒收。
+- 过了 `end`，这些用户自动过期 -> 拒收。
 
 **时间输入**：支持完整 ISO-8601（`2026-09-10T14:00:00`，带偏移 `+08:00` / 末尾 `Z` 均可）
-与简写 `HH:MM`（视为**今天本地**；跨零点如 `22:00→02:00` 自动顺延次日）。不带偏移者按
+与简写 `HH:MM`（视为**今天本地**；跨零点如 `22:00->02:00` 自动顺延次日）。不带偏移者按
 **运行机器本地时区**解释，**存库统一转 UTC**。建议起止两端用同一种格式。
 
 ## 目录结构
@@ -227,14 +231,15 @@ Admit-Keeper/
 **FastAPI 示例**（其它框架同理——找"请求进 handler 前"的那个中间件/钩子/router）：
 ```python
 from fastapi import HTTPException
-from admit_keeper.gate import is_allowed      # 共享门卫助手
+from admit_keeper.gate import is_allowed  # 共享门卫助手
+
 
 @app.middleware("http")
 async def admit(req, call_next):
-    platform = req.headers.get("x-platform")   # 从你的事件里取出 platform / identity
+    platform = req.headers.get("x-platform")  # 从你的事件里取出 platform / identity
     identity = req.headers.get("x-user-id")
-    if not is_allowed(platform, identity):     # 内核判定
-        raise HTTPException(403, "not_authorized")   # 框架的"丢弃"动作
+    if not is_allowed(platform, identity):  # 内核判定
+        raise HTTPException(403, "not_authorized")  # 框架的"丢弃"动作
     return await call_next(req)
 ```
 
@@ -253,12 +258,13 @@ async def admit(req, call_next):
 | `ADMIT_GATE_PLATFORMS` | `feishu`（示例默认，可改） | 受管平台，逗号分隔的**任意渠道名**；列表外放行。窗口亦受此约束 |
 | `ADMIT_ALLOWED_USERS` | 空 | 永久白名单（只覆盖过期，不覆盖 banned） |
 | `ADMIT_FAIL_OPEN` | `1` | 数据不可得时放行；`0` 为拒绝（更安全） |
+| `ADMIT_DB_BACKEND` | `sqlite` | 数据库后端；当前仅内置 SQLite，留作 MySQL 接入点 |
 
 ## 测试
 
 ```bash
 uv sync                                  # 安装 dev 依赖（uv 环境，含 mcp[cli]<2 + pytest）
-uv run pytest                            # 全量：单元 + MCP 集成 + 窗口 + 插件钩子，共 118 项
+uv run pytest                            # 全量：单元 + MCP 集成 + 窗口 + 插件钩子，共 125 项
 ```
 
 详见 [docs/architecture.md](docs/architecture.md) 与 [docs/design-decisions.md](docs/design-decisions.md)。

@@ -7,6 +7,9 @@ license = { text = "MIT" }
 
 [project.optional-dependencies]
 mcp = ["mcp[cli]>=1.0,<2"]
+# 日志优先 loguru（CLAUDE.md 要求）；装此 extra 即启用，未装则 gate.warn 回退标准库 logging。
+# 不列入必需依赖：准入层跑在网关进程热路径，保持「零必需依赖」更能抗环境缺失。
+log = ["loguru>=0.7"]
 
 [build-system]
 requires = ["setuptools>=61"]

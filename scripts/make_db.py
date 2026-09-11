@@ -7,6 +7,7 @@
 不传路径则用默认 ADMIT_KEEPER_DB / ~/.hermes/admit_keeper.db。
 可单独用来预先建表（幂等），不依赖 MCP 首次调用。
 """
+
 from __future__ import annotations
 
 import os
@@ -24,7 +25,7 @@ def main() -> None:
     target = sys.argv[1] if len(sys.argv) > 1 else db_path()
     con = open_init(target)
     con.close()
-    print(f"✔ 建表就绪: {target}")
+    print(f"[完成] 建表就绪: {target}")
 
 
 if __name__ == "__main__":

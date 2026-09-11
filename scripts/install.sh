@@ -26,7 +26,7 @@ echo "== 补全 mcp[cli]（钉 mcp<2：2.x 已移除 FastMCP，需 v1 API）=="
 python3 -m pip install -U "mcp[cli]>=1.0,<2"
 
 echo
-echo "✔ 安装完成。接下来手动做两件事："
+echo "[完成] 安装完成。接下来手动做两件事："
 echo "  1) 编辑 $PROFILE_DST/.env    —— 参考 config/env.example（ADMIT_KEEPER_DB 等）"
 echo "  2) 编辑 $PROFILE_DST/config.yaml —— 参考 config/config.example.yaml（plugins + mcp_servers）"
 echo "  然后: hermes plugins enable admit-keeper"
