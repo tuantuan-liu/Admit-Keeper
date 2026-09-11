@@ -125,6 +125,7 @@ tail -f ~/.hermes/logs/gateway.log # 启动后应无 pre_gateway_dispatch 注册
 ```python
 grant("feishu", "ou_xxx", days=7)  # 开通 7 天
 grant("feishu", "ou_yyy")  # 永久授权
+grant("feishu", "ou_zzz", days=7, force=True)  # 封禁中的身份：显式解封并授权
 extend("feishu", "ou_xxx", days=3)  # 续期 3 天（banned 需先 unban）
 ban("feishu", "ou_zzz", note="滥用")  # 立即封禁
 unban("feishu", "ou_zzz")  # 仅解封，保留原期限（≠授权，见 ADR-9）
@@ -140,6 +141,8 @@ remove("feishu", "ou_xxx")  # 删记录（封禁记录需 force=True；删后按
 > **`extend` 以 `max(现在, 原到期)` 为基准**（[ADR-10](docs/design-decisions.md)）：未到期则在原
 > 到期上叠加，已过期则从**现在**起算并回显"立即生效"，避免"给过期用户续期却仍被拒"。
 > **`extend` 遇到非 `active` 的记录一律报错**（`banned` 需先 `unban`）—— 续期不改状态（[ADR-3](docs/design-decisions.md)）。
+> **`grant` 对封禁身份默认拒绝**（[ADR-13](docs/design-decisions.md)）：授权是「时间维度」操作，
+> 不该顺带撤销封禁；确需「一步解封并授权」请传 `force=True`，否则请先 `unban`。
 > **`remove` 对封禁记录默认拒绝**（[ADR-14](docs/design-decisions.md)）：删掉记录等于撤销封禁，且该身份
 > 会按「无记录」重新判定，可能被**开放中的窗口**立刻放行；确需删除请传 `force=True`。
 > **`by` 不接受保留字 `window`**（[ADR-15](docs/design-decisions.md)）：它是窗口重入的唯一判据，
@@ -271,7 +274,7 @@ async def admit(req, call_next):
 
 ```bash
 uv sync                                  # 安装 dev 依赖（uv 环境，含 mcp[cli]<2 + pytest）
-uv run pytest                            # 全量：单元 + MCP 集成 + 窗口 + 插件钩子，共 137 项
+uv run pytest                            # 全量：单元 + MCP 集成 + 窗口 + 插件钩子，共 141 项
 ```
 
 详见 [docs/architecture.md](docs/architecture.md) 与 [docs/design-decisions.md](docs/design-decisions.md)。

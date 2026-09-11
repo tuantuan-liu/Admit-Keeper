@@ -62,7 +62,7 @@
   本组件 `mcp/admit_keeper_mcp.py` 基于 v1 `FastMCP`，因此在 `install.sh`、
   `pyproject`（`mcp[cli]>=1.0,<2`）统一**钉 `<2`**，避免装到 2.x 后 `FastMCP` import 崩溃。
 - 若日后要升级到 mcp 2.x，需把 `FastMCP` 迁移到 `MCPServer`（API 多处变动），届时再单独处理。
-- 测试用 uv：`uv sync`（装 `mcp[cli]<2` + `pytest`）+ `uv run pytest`（137 项）。
+- 测试用 uv：`uv sync`（装 `mcp[cli]<2` + `pytest`）+ `uv run pytest`（141 项）。
 
 ## ADR-8 临时准入窗口：放行「无记录」新身份 + 重开时重新纳入「窗口引入」的老面孔
 
@@ -122,7 +122,7 @@
   工具却报"成功"——运营最常用的场景（"这人过期了，再给 7 天"）恰好静默失效，且反馈骗人。
 - **代价**：无。基准规则更符合"续期"直觉，且返回串把基准与生效性摊开，避免再次静默。
 - **备注**：回归测试 `test_extend_expired_takes_effect_immediately` /
-  `test_extend_active_stacks_on_existing_expiry` 锁死。`extend` 遇 `banned` 仍**报错**
+  `test_extend_active_stacks_on_existing_expiry` 锁死。`extend` 遇**非 active** 记录仍**报错**
   （ADR-3 不变）。
 
 ## ADR-11 日志优先 loguru，但保持「可选依赖 + 回退」
@@ -151,6 +151,22 @@
 - **未做**：不内置 MySQL 实现（无驱动、无法验证），仅留接口与文档；MCP 侧另有若干简单
   SELECT/UPDATE 仍用 `?` 占位符，适配 MySQL 时需改为后端占位符 —— 已在该处注释标注。
 
+## ADR-13 `grant` 不得静默撤销封禁（需 `force=True`）
+
+- **决策**：`grant` 对 `status='banned'` 的身份**默认拒绝**并报错，要求先 `unban`，或显式传
+  `force=True` 确认「一步解封并授权」。守卫由 `keep_banned=not force` 落到 DB 层（**原子**），
+  再以写后复核 `status` 判定是否被拦下，据此给出诚实的失败。
+- **原因**：`grant` 原本无条件 `_upsert(status=active)`，于是 `ban` -> `grant` 一步就完成了
+  「解封 + 授权」——**正是 ADR-9 立论要防的那件事**（「两个决策分开，避免一次误操作同时完成
+  解封与永久授权」）。它与 ADR-14 的 `remove` 是同一类侧路：都能绕过封禁，而封禁是最高优先级
+  （ADR-2）。ADR-3 已规定 `extend` 不得隐式改变封禁态，`grant` 是同一条线上的另一处。
+- **代价**：把封禁用户放回来变成**两步**（`unban` 后再 `grant`，或一步 `force=True`）。这是刻意的。
+- **实现要点（为何用复核而非 rowcount）**：MySQL 的 `INSERT ... ON DUPLICATE KEY UPDATE` 的
+  affected_rows 语义与 SQLite 不同（**更新前后无变化也算 0**），拿 `rowcount == 0` 当「被封禁」
+  会误伤 MySQL 后端 —— 反而拦住合法授权。复核 `status` 则各引擎一致，也更简单。
+- **备注**：工具级 `force` 只影响「是否允许这次操作」，不改变判定优先级（ADR-2）：
+  `banned` 依然是最高优先级，授权成功也只是把它变成 `active`。
+
 ## ADR-14 撤销封禁必须显式确认（`remove` 需 `force=True`）
 
 - **决策**：`remove` 对 `status='banned'` 的记录**默认拒绝**并报错，要求显式传 `force=True`；
@@ -160,7 +176,10 @@
   实测过这条链：`ban` -> `remove` -> 开窗 -> `gate()` 返回 `window_open`（放行）。即 `remove`
   是一条**比 `grant` 更重**的操作（`grant` 至少还留一条记录），却原本没有任何门槛。
 - **代价**：删除封禁记录多一步确认。只是想让某人恢复访问，应改用 `unban`（保留记录与期限，ADR-9）。
-- **备注**：`grant` 对 banned 的同类门槛见 ADR-17；工具级的 `force` 只影响「是否允许这次操作」，
+- **实现要点**：守卫写成**单条条件化 DELETE**（`... AND (status<>'banned' OR ?)`），而不是
+  「先 SELECT 判 banned、再 DELETE」——后者的两步之间是可被 `ban` 插入的竞态窗口。仅当
+  `rowcount == 0` 时才补一次读，用于区分「本无记录」与「被守卫拦下」，正常路径只有一条 DELETE。
+- **备注**：`grant` 对 banned 的同类门槛见 ADR-13；工具级的 `force` 只影响「是否允许这次操作」，
   不改变判定优先级（ADR-2），`banned` 依然是最高优先级。
 
 ## ADR-15 `granted_by` 身兼「来源」与「操作者」两职，`by` 拒绝保留字

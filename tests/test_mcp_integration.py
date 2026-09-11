@@ -249,6 +249,45 @@ def test_grant_normalizes_blank_by(db_env):
     assert "by=admin" in grant("feishu", "ou_a", days=1, by="   ")
 
 
+def test_grant_on_banned_raises_without_force(db_env):
+    """P0 回归（ADR-13）：grant 不得静默撤销封禁 —— 否则「先 ban 再 grant」可一步解封+授权，
+    与 remove 的同类侧路一致。默认拒绝，且失败不留痕。"""
+    grant("feishu", "ou_x", days=-1)
+    ban("feishu", "ou_x", note="滥用")
+    with pytest.raises(ValueError):
+        grant("feishu", "ou_x", days=7)
+    assert query("feishu", "ou_x").startswith("status=banned")  # 期限与封禁态均未被改动
+    assert _judge("feishu", "ou_x") == "deny:banned"
+
+
+def test_grant_on_banned_with_force_unbans(db_env):
+    """force=True 才允许「一步解封并授权」。"""
+    ban("feishu", "ou_x", note="滥用")
+    assert "granted" in grant("feishu", "ou_x", days=7, force=True)
+    assert query("feishu", "ou_x").startswith("status=active")
+    assert _judge("feishu", "ou_x") == "active"
+
+
+def test_grant_force_false_does_not_block_normal_paths(db_env):
+    """守卫不得误伤：全新身份、以及本就 active 的记录，force=False 都应照常成功。"""
+    assert "granted" in grant("feishu", "ou_new", days=7)  # 无记录 -> INSERT
+    grant("feishu", "ou_a", days=7)
+    assert "granted" in grant("feishu", "ou_a", days=7)  # 已 active -> 正常续期
+    assert "granted" in grant("feishu", "ou_n2", days=7, force=True)  # 无记录 + force 也无害
+
+
+def test_remove_guard_leaves_banned_record_intact(db_env):
+    """remove 的守卫写成**单条条件化 DELETE**（而非先 SELECT 再 DELETE），
+    故不存在「检查后、删除前被 ban 插入」的竞态窗口。此处锁死可观测契约：被封禁者不被删除。"""
+    ban("feishu", "ou_b", note="滥用")
+    with pytest.raises(ValueError):
+        remove("feishu", "ou_b")
+    assert query("feishu", "ou_b").startswith("status=banned")
+    assert _judge("feishu", "ou_b") == "deny:banned"
+    assert "removed" in remove("feishu", "ou_b", force=True)  # force 才删
+    assert query("feishu", "ou_b").startswith("NOT_FOUND")
+
+
 def test_extend_rejects_unknown_status(db_env):
     """P0 回归：policy 对未知 status 明确 fail-closed（deny:unknown_status），
     extend 若把它改写成 active 就等于绕过那层防御（ADR-3：续期不改状态）。"""
